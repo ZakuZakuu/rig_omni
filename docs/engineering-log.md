@@ -91,3 +91,34 @@ The current working hypothesis is that visible stick-slip may correlate with
   no `/dev/ttyACM*`; `rig_env` reached the Windows USB attach helper but WSL
   returned `UtilBindVsockAnyPort: socket failed 1`. Direct serial capture is
   therefore delegated to the already-connected user monitor for this session.
+
+## 2026-09-13 — First live SCS009 snapshot and freshness check
+
+The user ran the new firmware without another flash from this session. The
+read-only snapshot returned all 24 requested entries for every ID (120 records,
+no timeouts). All five servos reported the same identity and core control values:
+
+- firmware `00.16`, model bytes `05 04`;
+- baud register `01` (the configured 500 kbit/s setting);
+- position limits `0x0014..0x03EB` (20..1003 counts);
+- maximum torque limit `0x03E8` (1000 raw counts);
+- P=`0x0F`, D=`0x0F`, I=`0x00`;
+- minimum startup force `0x0018` (raw value 24);
+- IDs 1–4 have clockwise/counter-clockwise dead zones `01/01`.
+
+ID 5 differs at dead zone `04/04`; this is an observation to preserve, not a
+reason to tune yet. Protection entries were also identical (`0x14`, `0xC8`).
+The raw dump remains the authoritative baseline until units/bitfields are
+verified for this exact SCS009 revision.
+
+The visible 10-degree joint-0 step/hold/return completed its 4-second window:
+command position moved approximately 489→523 counts and feedback followed about
+489→523 counts. Across 78 telemetry rows, feedback age medians were roughly
+50–62 ms. There were occasional spikes up to 165–214 ms (and one initial stale
+sample at 588 ms immediately after the parameter dump), so freshness is improved
+but not yet clean enough to use for closed-loop conclusions.
+
+The next code revision keeps a poll ID unchanged when the UART send lock rejects
+a status request. This prevents a dropped request from silently advancing the
+round-robin schedule. It builds successfully as the pending commit after this
+log entry; it has not yet been flashed or hardware-tested.

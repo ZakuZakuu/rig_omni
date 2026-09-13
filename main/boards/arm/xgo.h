@@ -69,7 +69,7 @@ void EnableMotor(uint8_t ID, uint8_t mode);
 void EnableAllMotor(int mode);
 void SetMotorPos(short pos[],short vel);
 void SetMotorAngle(float angle[],short vel);
-void SendMotorCommand(uint8_t *pData, uint16_t size);
+bool SendMotorCommand(uint8_t *pData, uint16_t size);
 //Movement & Control Functions
 
 void xgo_control();

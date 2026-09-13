@@ -187,16 +187,17 @@ void InitZeroPos(){
     init_flag = 1;
 }
 
-void SendMotorCommand(uint8_t *pData,uint16_t size)
+bool SendMotorCommand(uint8_t *pData,uint16_t size)
 {
     if(serial_lock){
-		return;
+		return false;
 	}else{
 		serial_lock = 1;
 	}
 	uart_write_bytes(UART_NUM_2,pData,size);
     uart_wait_tx_done(UART_NUM_2, pdMS_TO_TICKS(50));
 	serial_lock = 0;
+	return true;
 }
 
 void SetMotorPos(short pos[], short vel) {
@@ -246,7 +247,7 @@ void SetMotorAngle(float angle[],short vel){
     SetMotorPos(pos, vel);
 }
 
-void ReadMotorState(uint8_t ID){
+bool ReadMotorState(uint8_t ID){
 	uint8_t bBuf[8];
 	uint8_t CheckSum = 0;
 	bBuf[0] = 0xff;
@@ -258,7 +259,7 @@ void ReadMotorState(uint8_t ID){
 	bBuf[6] = 0x06;
 	CheckSum = ID + 0x04 + 0x02 + 0x38 + 0x06;
 	bBuf[7] = ~CheckSum;
-	SendMotorCommand(bBuf, 8);
+	return SendMotorCommand(bBuf, 8);
 }
 
 float servo_voltage = 0.0;  // ID=1 舵机电池电压
@@ -278,7 +279,7 @@ void ReadServoVoltage(uint8_t readID){
     SendMotorCommand(bBuf, 8);
 }
 
-static void ReadServoRegisters(uint8_t read_id, uint8_t address, uint8_t length) {
+static bool ReadServoRegisters(uint8_t read_id, uint8_t address, uint8_t length) {
     uint8_t packet[8];
     packet[0] = 0xFF;
     packet[1] = 0xFF;
@@ -288,7 +289,7 @@ static void ReadServoRegisters(uint8_t read_id, uint8_t address, uint8_t length)
     packet[5] = address;
     packet[6] = length;
     packet[7] = static_cast<uint8_t>(~(read_id + 0x04 + 0x02 + address + length));
-    SendMotorCommand(packet, sizeof(packet));
+    return SendMotorCommand(packet, sizeof(packet));
 }
 
 void EnableMotor(uint8_t ID, uint8_t mode){
@@ -378,7 +379,17 @@ static bool ReadServoParameter(uint8_t read_id, const ServoParameterSpec& spec) 
     servo_parameter_capture.expected_length = spec.length;
     servo_parameter_capture.complete = false;
     servo_parameter_capture.pending = true;
-    ReadServoRegisters(read_id, spec.address, spec.length);
+    bool sent = false;
+    for (int attempt = 0; attempt < 5 && !sent; ++attempt) {
+        sent = ReadServoRegisters(read_id, spec.address, spec.length);
+        if (!sent) {
+            vTaskDelay(pdMS_TO_TICKS(2));
+        }
+    }
+    if (!sent) {
+        servo_parameter_capture.pending = false;
+        return false;
+    }
 
     const TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(100);
     while (!servo_parameter_capture.complete &&
@@ -527,9 +538,10 @@ void xgo_feedback_poll() {
     if (servo_parameter_dump_active) {
         return;
     }
-    ReadMotorState(poll_id);
-    if (++poll_id > MOTOR_NUM) {
-        poll_id = 1;
+    if (ReadMotorState(poll_id)) {
+        if (++poll_id > MOTOR_NUM) {
+            poll_id = 1;
+        }
     }
 }
 
