@@ -13,6 +13,7 @@ enum MotionLabExperiment {
     kMotionLabSynchronizedSweep = 1,
     kMotionLabStaggeredSweep = 2,
     kMotionLabHold = 3,
+    kMotionLabStepHoldReturn = 4,
 };
 
 enum MotionLabTrajectory {
@@ -26,7 +27,10 @@ struct MotionLabConfig {
     MotionLabTrajectory trajectory;
     uint8_t joint_index;  // Used by kMotionLabSingleJointSweep.
     float amplitude_deg;
-    uint32_t duration_ms; // Complete out-and-back duration, or hold duration.
+    // Complete out-and-back duration for sweeps, hold duration for kMotionLabHold,
+    // or one-way transition duration for kMotionLabStepHoldReturn.
+    uint32_t duration_ms;
+    uint32_t hold_ms;     // Peak hold time for kMotionLabStepHoldReturn.
     uint32_t stagger_ms;
     float max_velocity_deg_s;
     float max_acceleration_deg_s2;

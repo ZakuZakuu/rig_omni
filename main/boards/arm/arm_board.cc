@@ -49,6 +49,7 @@ MotionLabConfig MotionLabDefaultConfig() {
         .joint_index = 0,
         .amplitude_deg = 3.0f,
         .duration_ms = 2000,
+        .hold_ms = 1000,
         .stagger_ms = 120,
         .max_velocity_deg_s = 45.0f,
         .max_acceleration_deg_s2 = 180.0f,
@@ -79,7 +80,8 @@ MotionLabStartResult StartMotionLab(const MotionLabConfig& config) {
 void PrintMotionLabConsoleHelp() {
     printf("MLAB_CONSOLE commands:\r\n"
            "  mlab hold\r\n"
-           "  mlab run <experiment 0..2> <trajectory 0..2> <joint 0..4> <amplitude_deg 1..10> "
+           "  mlab visible [joint 0..4]  (10 deg, 1.5 s out, 1 s hold, 1.5 s back)\r\n"
+           "  mlab run <experiment 0..2 or 4> <trajectory 0..2> <joint 0..4> <amplitude_deg 1..10> "
            "<duration_ms 500..30000> <stagger_ms 0..2000> <max_velocity_deg_s 1..90> "
            "<max_acceleration_deg_s2 1..500> <deadband_mdeg 0..2000>\r\n"
            "  mlab stop\r\n"
@@ -657,14 +659,16 @@ private:
 
         mcp_server.AddTool("self.arm.motion_lab.run",
             "运行受控 Motion Lab 实验。experiment: 0=单关节往返, 1=五关节同步往返, "
-            "2=五关节错峰往返, 3=固定姿态保持。trajectory: 0=线性, 1=三次缓动, 2=最小加加速度。"
+            "2=五关节错峰往返, 3=固定姿态保持, 4=单关节推出-保持-返回。"
+            "trajectory: 0=线性, 1=三次缓动, 2=最小加加速度。"
             "实验会暂时隔离空闲微动和预设动作，振幅限制在 10 度以内，并以 MLAB CSV 行输出遥测。",
             PropertyList({
-                Property("experiment", kPropertyTypeInteger, 0, 0, 3),
+                Property("experiment", kPropertyTypeInteger, 0, 0, 4),
                 Property("trajectory", kPropertyTypeInteger, 2, 0, 2),
                 Property("joint", kPropertyTypeInteger, 0, 0, 4),
                 Property("amplitude_deg", kPropertyTypeInteger, 3, 0, 10),
                 Property("duration_ms", kPropertyTypeInteger, 2000, 500, 30000),
+                Property("hold_ms", kPropertyTypeInteger, 1000, 0, 10000),
                 Property("stagger_ms", kPropertyTypeInteger, 120, 0, 2000),
                 Property("max_velocity_deg_s", kPropertyTypeInteger, 45, 1, 90),
                 Property("max_acceleration_deg_s2", kPropertyTypeInteger, 180, 1, 500),
@@ -677,6 +681,7 @@ private:
                     .joint_index = static_cast<uint8_t>(properties["joint"].value<int>()),
                     .amplitude_deg = static_cast<float>(properties["amplitude_deg"].value<int>()),
                     .duration_ms = static_cast<uint32_t>(properties["duration_ms"].value<int>()),
+                    .hold_ms = static_cast<uint32_t>(properties["hold_ms"].value<int>()),
                     .stagger_ms = static_cast<uint32_t>(properties["stagger_ms"].value<int>()),
                     .max_velocity_deg_s = static_cast<float>(properties["max_velocity_deg_s"].value<int>()),
                     .max_acceleration_deg_s2 = static_cast<float>(properties["max_acceleration_deg_s2"].value<int>()),
@@ -1019,17 +1024,23 @@ public:
                 const uint32_t now_us = static_cast<uint32_t>(esp_timer_get_time());
                 motion_lab_get_status(&status, now_us);
                 if (status.active) {
+                    short command_pos[MOTOR_NUM];
+                    for (int i = 0; i < MOTOR_NUM; ++i) {
+                        command_pos[i] = static_cast<short>(motor[i].ZeroPos +
+                            status.command_deg[i] / M_A * M_N);
+                    }
                     if (!header_emitted) {
-                        printf("MLAB,ts_ms,experiment,trajectory,elapsed_ms,total_ms,cmd_deg[5],fb_pos[5],fb_speed_raw[5],fb_load_raw[5]\\r\\n");
+                        printf("MLAB,ts_ms,experiment,trajectory,elapsed_ms,total_ms,cmd_deg[5],cmd_pos[5],fb_pos[5],fb_speed_raw[5],fb_load_raw[5]\\r\\n");
                         header_emitted = true;
                     }
                     printf("MLAB,%lu,%d,%d,%lu,%lu,%.3f|%.3f|%.3f|%.3f|%.3f,"
-                           "%d|%d|%d|%d|%d,%.0f|%.0f|%.0f|%.0f|%.0f,%d|%d|%d|%d|%d\\r\\n",
+                           "%d|%d|%d|%d|%d,%d|%d|%d|%d|%d,%.0f|%.0f|%.0f|%.0f|%.0f,%d|%d|%d|%d|%d\\r\\n",
                            static_cast<unsigned long>(now_us / 1000), status.experiment, status.trajectory,
                            static_cast<unsigned long>(status.elapsed_ms),
                            static_cast<unsigned long>(status.total_duration_ms),
                            status.command_deg[0], status.command_deg[1], status.command_deg[2],
                            status.command_deg[3], status.command_deg[4],
+                           command_pos[0], command_pos[1], command_pos[2], command_pos[3], command_pos[4],
                            motor[0].FbPos, motor[1].FbPos, motor[2].FbPos, motor[3].FbPos, motor[4].FbPos,
                            motor[0].FbSpd, motor[1].FbSpd, motor[2].FbSpd, motor[3].FbSpd, motor[4].FbSpd,
                            motor[0].FbTor, motor[1].FbTor, motor[2].FbTor, motor[3].FbTor, motor[4].FbTor);
@@ -1080,6 +1091,22 @@ public:
                     config.duration_ms = 10000;
                     const MotionLabStartResult result = StartMotionLab(config);
                     printf("MLAB_CONSOLE hold: %s\r\n", motion_lab_start_result_string(result));
+                    continue;
+                }
+                int visible_joint = 0;
+                if (strcmp(line, "mlab visible") == 0 ||
+                    sscanf(line, "mlab visible %d", &visible_joint) == 1) {
+                    MotionLabConfig config = MotionLabDefaultConfig();
+                    config.experiment = kMotionLabStepHoldReturn;
+                    config.trajectory = kMotionLabLinear;
+                    config.joint_index = static_cast<uint8_t>(visible_joint);
+                    config.amplitude_deg = 10.0f;
+                    config.duration_ms = 1500;
+                    config.hold_ms = 1000;
+                    config.max_velocity_deg_s = 20.0f;
+                    config.max_acceleration_deg_s2 = 60.0f;
+                    const MotionLabStartResult result = StartMotionLab(config);
+                    printf("MLAB_CONSOLE visible: %s\r\n", motion_lab_start_result_string(result));
                     continue;
                 }
                 if (strcmp(line, "mlab stop") == 0) {

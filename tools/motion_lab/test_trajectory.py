@@ -19,6 +19,14 @@ def minimum_jerk(t: float) -> float:
     return t * t * t * (10.0 + t * (-15.0 + 6.0 * t))
 
 
+def step_hold_return(elapsed_ms: int, transition_ms: int, hold_ms: int) -> float:
+    if elapsed_ms < transition_ms:
+        return elapsed_ms / transition_ms
+    if elapsed_ms < transition_ms + hold_ms:
+        return 1.0
+    return max(0.0, 1.0 - (elapsed_ms - transition_ms - hold_ms) / transition_ms)
+
+
 class TrajectoryTest(unittest.TestCase):
     def test_endpoints(self) -> None:
         for curve in (linear, cubic_ease, minimum_jerk):
@@ -45,6 +53,12 @@ class TrajectoryTest(unittest.TestCase):
             if abs(filtered_deg - sent_deg) >= 0.250:
                 sent_deg = filtered_deg
         self.assertGreater(sent_deg, 1.0)
+
+    def test_step_hold_return_has_observable_peak_hold(self) -> None:
+        self.assertEqual(step_hold_return(0, 1500, 1000), 0.0)
+        self.assertEqual(step_hold_return(1500, 1500, 1000), 1.0)
+        self.assertEqual(step_hold_return(2499, 1500, 1000), 1.0)
+        self.assertEqual(step_hold_return(4000, 1500, 1000), 0.0)
 
 
 if __name__ == "__main__":
