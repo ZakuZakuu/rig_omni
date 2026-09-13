@@ -28,6 +28,9 @@
 #include <esp_flash.h>
 #include <esp_random.h>
 
+#include <stdio.h>
+#include <string.h>
+
 #include "esp_lcd_gc9a01.h"
 #include "xgo.h"
 #include "xgo_action.h"
@@ -36,6 +39,54 @@
 #include "imu.h"
 
 #define TAG "ARM"
+
+namespace {
+
+MotionLabConfig MotionLabDefaultConfig() {
+    return {
+        .experiment = kMotionLabSingleJointSweep,
+        .trajectory = kMotionLabMinimumJerk,
+        .joint_index = 0,
+        .amplitude_deg = 3.0f,
+        .duration_ms = 2000,
+        .stagger_ms = 120,
+        .max_velocity_deg_s = 45.0f,
+        .max_acceleration_deg_s2 = 180.0f,
+        .deadband_deg = 0.250f,
+    };
+}
+
+MotionLabStartResult StartMotionLab(const MotionLabConfig& config) {
+    if (calibrate_mode == 1 || teach_state != TEACH_IDLE) return kMotionLabInvalidConfig;
+
+    int16_t feedback[MOTOR_NUM];
+    int16_t zero[MOTOR_NUM];
+    for (int i = 0; i < MOTOR_NUM; ++i) {
+        feedback[i] = motor[i].FbPos;
+        zero[i] = motor[i].ZeroPos;
+    }
+    const MotionLabStartResult result = motion_lab_start(config, feedback, zero);
+    if (result == kMotionLabStarted) {
+        Action_ID = 0;
+        actionLoop_FLAG = 0;
+        ESP_LOGI(TAG, "Motion Lab started: experiment=%d trajectory=%d amplitude=%.1f duration=%lums",
+                 config.experiment, config.trajectory, config.amplitude_deg,
+                 static_cast<unsigned long>(config.duration_ms));
+    }
+    return result;
+}
+
+void PrintMotionLabConsoleHelp() {
+    printf("MLAB_CONSOLE commands:\r\n"
+           "  mlab hold\r\n"
+           "  mlab run <experiment 0..2> <trajectory 0..2> <joint 0..4> <amplitude_deg 1..10> "
+           "<duration_ms 500..30000> <stagger_ms 0..2000> <max_velocity_deg_s 1..90> "
+           "<max_acceleration_deg_s2 1..500> <deadband_mdeg 0..2000>\r\n"
+           "  mlab stop\r\n"
+           "  mlab help\r\n");
+}
+
+}  // namespace
 
 // 长按重置 NVS 的时间阈值（毫秒）
 static constexpr int kLongPressResetMs = 3000;
@@ -620,9 +671,6 @@ private:
                 Property("deadband_mdeg", kPropertyTypeInteger, 250, 0, 2000),
             }),
             [this](const PropertyList& properties) -> ReturnValue {
-                if (calibrate_mode == 1) return std::string("标定模式中，Motion Lab 被拒绝");
-                if (teach_state != TEACH_IDLE) return std::string("示教模式中，Motion Lab 被拒绝");
-
                 MotionLabConfig config = {
                     .experiment = static_cast<MotionLabExperiment>(properties["experiment"].value<int>()),
                     .trajectory = static_cast<MotionLabTrajectory>(properties["trajectory"].value<int>()),
@@ -634,21 +682,10 @@ private:
                     .max_acceleration_deg_s2 = static_cast<float>(properties["max_acceleration_deg_s2"].value<int>()),
                     .deadband_deg = properties["deadband_mdeg"].value<int>() / 1000.0f,
                 };
-                int16_t feedback[MOTOR_NUM];
-                int16_t zero[MOTOR_NUM];
-                for (int i = 0; i < MOTOR_NUM; ++i) {
-                    feedback[i] = motor[i].FbPos;
-                    zero[i] = motor[i].ZeroPos;
-                }
-                const MotionLabStartResult result = motion_lab_start(config, feedback, zero);
+                const MotionLabStartResult result = StartMotionLab(config);
                 if (result != kMotionLabStarted) {
                     return std::string("Motion Lab 未启动: ") + motion_lab_start_result_string(result);
                 }
-                Action_ID = 0;
-                actionLoop_FLAG = 0;
-                ESP_LOGI(TAG, "Motion Lab started: experiment=%d trajectory=%d amplitude=%.1f duration=%lums",
-                         config.experiment, config.trajectory, config.amplitude_deg,
-                         static_cast<unsigned long>(config.duration_ms));
                 return std::string("Motion Lab 已启动；请在串口日志中收集 MLAB CSV 行");
             });
 
@@ -1002,6 +1039,75 @@ public:
                 vTaskDelay(pdMS_TO_TICKS(50));  // 20 Hz telemetry outside real-time control.
             }
         }, "motion_lab_telemetry", 4096, this, 1, nullptr, 1);
+
+        // UART0 is the human-facing monitor console. The servo bus remains on
+        // UART2, so this low-priority task cannot contend with servo traffic.
+        xTaskCreatePinnedToCore([](void* arg) {
+            (void)arg;
+            char line[192];
+            printf("MLAB_CONSOLE ready; type 'mlab help' and press Enter\r\n");
+            while (true) {
+                if (fgets(line, sizeof(line), stdin) == nullptr) {
+                    vTaskDelay(pdMS_TO_TICKS(50));
+                    continue;
+                }
+                line[strcspn(line, "\r\n")] = '\0';
+
+                if (strcmp(line, "mlab help") == 0) {
+                    PrintMotionLabConsoleHelp();
+                    continue;
+                }
+                if (strcmp(line, "mlab hold") == 0) {
+                    MotionLabConfig config = MotionLabDefaultConfig();
+                    config.experiment = kMotionLabHold;
+                    config.amplitude_deg = 0.0f;
+                    config.duration_ms = 10000;
+                    const MotionLabStartResult result = StartMotionLab(config);
+                    printf("MLAB_CONSOLE hold: %s\r\n", motion_lab_start_result_string(result));
+                    continue;
+                }
+                if (strcmp(line, "mlab stop") == 0) {
+                    if (motion_lab_is_active()) {
+                        motion_lab_stop();
+                        printf("MLAB_CONSOLE stop requested\r\n");
+                    } else {
+                        printf("MLAB_CONSOLE no active experiment\r\n");
+                    }
+                    continue;
+                }
+
+                int experiment = 0;
+                int trajectory = 0;
+                int joint = 0;
+                int amplitude_deg = 0;
+                int duration_ms = 0;
+                int stagger_ms = 0;
+                int max_velocity_deg_s = 0;
+                int max_acceleration_deg_s2 = 0;
+                int deadband_mdeg = 0;
+                const int parsed = sscanf(
+                    line, "mlab run %d %d %d %d %d %d %d %d %d",
+                    &experiment, &trajectory, &joint, &amplitude_deg, &duration_ms,
+                    &stagger_ms, &max_velocity_deg_s, &max_acceleration_deg_s2, &deadband_mdeg);
+                if (parsed == 9) {
+                    MotionLabConfig config = MotionLabDefaultConfig();
+                    config.experiment = static_cast<MotionLabExperiment>(experiment);
+                    config.trajectory = static_cast<MotionLabTrajectory>(trajectory);
+                    config.joint_index = static_cast<uint8_t>(joint);
+                    config.amplitude_deg = static_cast<float>(amplitude_deg);
+                    config.duration_ms = static_cast<uint32_t>(duration_ms);
+                    config.stagger_ms = static_cast<uint32_t>(stagger_ms);
+                    config.max_velocity_deg_s = static_cast<float>(max_velocity_deg_s);
+                    config.max_acceleration_deg_s2 = static_cast<float>(max_acceleration_deg_s2);
+                    config.deadband_deg = deadband_mdeg / 1000.0f;
+                    const MotionLabStartResult result = StartMotionLab(config);
+                    printf("MLAB_CONSOLE run: %s\r\n", motion_lab_start_result_string(result));
+                    continue;
+                }
+
+                printf("MLAB_CONSOLE unknown command; type 'mlab help'\r\n");
+            }
+        }, "motion_lab_console", 4096, this, 1, nullptr, 1);
         ESP_LOGI(TAG, "XGO control tasks created");
     }
 
