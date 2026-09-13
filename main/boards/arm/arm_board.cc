@@ -1086,7 +1086,7 @@ public:
             (void)arg;
             char line[192];
             size_t line_length = 0;
-            printf("MLAB_CONSOLE ready; feedback_poll=20ms; retry=on; type 'mlab help' and press Enter\r\n");
+            printf("MLAB_CONSOLE ready; feedback_poll=20ms; ack=on; retry=on; type 'mlab help' and press Enter\r\n");
             while (true) {
                 // ESP-IDF monitor configures UART0 in raw mode, so stdio can
                 // return after every character rather than every newline.

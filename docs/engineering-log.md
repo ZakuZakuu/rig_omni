@@ -157,3 +157,8 @@ The banner-confirmed build still showed the same class of stall: hold-test age
 medians were about 52–54 ms, while maxima reached 300–807 ms. The next revision
 therefore changes the polling invariant from “request sent” to “matching valid
 response received”; only the latter advances the ID, with a 60 ms retry timeout.
+
+The next banner revision adds `ack=on` so the response-gated round-robin build
+can be distinguished from the earlier send-retry build in a pasted monitor log.
+It is a traceability marker only; this revision has not yet been flashed or
+hardware-tested.
