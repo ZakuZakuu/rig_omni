@@ -148,3 +148,11 @@ The voltage-enabled rerun on commit `3d276c2` repeated each duration three times
 and preserved `speed_cmd_raw=350` in all 9 captures. Voltage stayed within
 7.90–8.10 V, with no stale rows. The raw logs are preserved outside Git under
 `backups/motion-lab-2026-09-13-voltage/` with a `SHA256SUMS` manifest.
+
+The first human-in-the-loop startup-force trial tested ID1 values 24 (A), 32 (B),
+and 40 (C) with the identical 10°/2.8 s minimum-jerk sequence. B improved the
+return but introduced visibly segmented forward motion; C was approximately the
+same as B. Neither was a whole-motion improvement, so the final reversible
+profile is factory startup=24 with factory P/D/I and dead zones. Startup-force
+tuning is considered inconclusive/negative for this joint and is paused rather
+than being escalated.

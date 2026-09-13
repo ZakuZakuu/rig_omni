@@ -388,10 +388,20 @@ out-and-back).
 
 The three logs are preserved with SHA-256 hashes in the experiment directory.
 The post-C readback confirmed ID1 startup=`0x0028`, P=`0x0F`, D=`0x0F`, I=`0x00`,
-and dead zones `0x01/0x01`; no other control group was changed. The robot is
-currently left at C pending the human visual choice. Do not apply another group
-until A, B, or C is selected by perceived smoothness; telemetry is retained for
+and dead zones `0x01/0x01`; no other control group was changed. At this point the
+robot was paused at C pending the human visual choice. Telemetry is retained for
 diagnosis but is not the selector.
+
+### Human visual result
+
+The user repeated A three times, then watched B and C with explicit notices before
+each parameter switch. A showed noticeable start-of-travel stick-slip and a
+slightly better return. B made the return substantially smoother, but converted
+the forward motion into roughly three discrete jumps. C looked approximately the
+same as B, with no visible improvement. Because neither candidate improved the
+whole motion and the benefit was marginal, C was rejected and ID1 startup was
+returned to A (`0x0018`). The final readback confirmed factory startup, P/D/I, and
+dead zones. No further startup-force candidates will be tested.
 
 ## 2026-09-13 — Unexpected ID2 torque loss; tuning paused
 
