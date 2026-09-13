@@ -6,6 +6,23 @@ releases/
 tmp/
 test_firmware/
 
+# ===== 本地硬件实验数据（不要提交原始 UART/flash 数据） =====
+backups/
+*.flash.bin
+*.flashdump
+*.raw.log
+*.serial.log
+
+# ===== 本地环境与凭据 =====
+.env
+.env.*
+.espressif/
+*.pem
+*.key
+credentials*.json
+secrets*.json
+.python-version
+
 # ===== ESP-IDF 组件与配置 =====
 components/
 managed_components/

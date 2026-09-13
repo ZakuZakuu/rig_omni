@@ -2,6 +2,22 @@
 
 An Open-Source ESP32-S3 Firmware for Multipurpose Intelligent Robots
 
+## RIG-Creature development status
+
+This checkout is the firmware foundation for the RIG-Arm companion-robot
+project. The current development branch is `dev/motion-lab`: it preserves the
+upstream multi-board firmware while adding a guarded Motion Lab for reproducible
+five-joint experiments, timestamped telemetry, and reversible joint-0 actuator
+characterization. The near-term goal is expressive, low-level motion quality;
+AI/VLM behavior orchestration is intentionally out of scope for this layer.
+
+Current status: the ESP32-S3 RIG-Arm build and UART workflow are reproducible,
+Motion Lab minimum-jerk baselines and v0.2 bounded auto-calibration screening
+are implemented, and the remaining actuator choice requires human visual
+comparison. See [`docs/auto-calibration-v0.2.md`](docs/auto-calibration-v0.2.md)
+and [`docs/engineering-log.md`](docs/engineering-log.md) for the current
+protocol and decision history.
+
 ESP32-S3 · Voice AI · EAF Animation · MCP Remote Control · Multi-Bot Architecture
 
 📖 [中文文档](README_CN.md)
