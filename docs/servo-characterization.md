@@ -91,6 +91,21 @@ question is whether visible stutter tracks load and very-low-speed portions of
 the same minimum-jerk profile; only after this baseline may one internal
 parameter (dead zone, P, D, or startup force) be changed and restored.
 
+For unattended captures, `tools/motion_lab/capture_serial.py` continuously
+drains UART0 and writes raw bytes to a file, avoiding monitor/PTY backpressure.
+For example:
+
+```bash
+python3 tools/motion_lab/capture_serial.py \
+  --port "$RIG_PORT" \
+  --command 'mlab run 0 2 0 10 3000 0 15 30 0' \
+  --duration-ms 3000 \
+  --output /tmp/rig_motion_3000ms.log
+```
+
+The output is intentionally not committed; keep it with the experiment notes
+and record its path, firmware commit, posture, and load separately.
+
 The selected-joint mode is an observability aid, not a closed-loop controller.
 Do not interpret a high `fb_speed_raw` value as calibrated angular speed until
 the SCS009 scale is independently verified.

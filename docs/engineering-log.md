@@ -267,3 +267,31 @@ These results improve observability and failure containment but do not justify
 PID, dead-zone, or startup-torque changes. Duration/load comparisons remain the
 next characterization step, with high-rate stats retained alongside each raw
 log.
+
+## 2026-09-13 — Unloaded minimum-jerk duration sweep
+
+Using the UART-draining `tools/motion_lab/capture_serial.py` helper and the
+final flashed build, joint 0 was tested with the same 10-degree minimum-jerk
+single-joint sweep at 1.5 s, 3 s, and 6 s complete out-and-back durations.
+All runs used `max_velocity=15`, `max_acceleration=30`, zero command deadband,
+the current 40 Hz Motion Lab sync-write cadence, and no added mechanical load.
+
+| duration | telemetry rows | command range (deg) | feedback range (counts) | max age (j0..j4 ms) | stale rows |
+| ---: | ---: | ---: | ---: | --- | --- |
+| 1.5 s | 26 | 4.12..17.30 | 522..562 | 254, 307, 287, 308, 273 | 0, 0, 0, 0, 0 |
+| 3 s | 53 | -7.62..2.38 | 483..514 | 163, 137, 165, 140, 150 | 0, 0, 0, 0, 0 |
+| 6 s | 106 | -0.88..9.12 | 491..537 | 141, 171, 142, 165, 143 | 0, 0, 0, 0, 0 |
+
+The longer profiles naturally provide more low-command-velocity samples near
+the minimum-jerk endpoints (approximately 1, 4, and 15 samples under the
+current 20 Hz telemetry and a 0.5 deg/s finite-difference threshold). The raw
+root load medians in these three captures were approximately 1093, 114, and 99
+respectively, with maxima 1153, 1168, and 1243. Because the load field is an
+unsigned/raw effort encoding and the captures begin at different poses, this is
+not a monotonic duration relationship and must not be treated as evidence of a
+servo-parameter effect.
+
+Conclusion: unloaded duration changes are mechanically safe and observable, but
+they do not yet separate low-speed stick-slip from posture/load or system-level
+transport effects. A controlled safe-load/posture comparison is still required
+before touching internal P/D/dead-zone/startup-force parameters.
