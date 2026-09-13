@@ -162,3 +162,23 @@ The next banner revision adds `ack=on` so the response-gated round-robin build
 can be distinguished from the earlier send-retry build in a pasted monitor log.
 It is a traceability marker only; this revision has not yet been flashed or
 hardware-tested.
+
+## 2026-09-13 — Response-gated polling hold result
+
+The user then ran a 10-second `mlab hold` with the banner
+`feedback_poll=20ms; ack=on; retry=on`. After the initial warm-up, feedback ages
+were generally within the expected 0–120 ms range. Ignoring the first 500 ms of
+startup, observed maxima were approximately 123, 145, 128, 152, and 125 ms for
+joints 1–5 respectively. This is a substantial improvement over the previous
+300–807 ms stalls, although occasional samples still exceed the target window
+and should be monitored during motion tests.
+
+One row reported `4294967295` ms for joint 2. The corresponding feedback
+timestamp was one millisecond newer than the telemetry task's `now_ms`, which
+is a benign cross-task snapshot race that wrapped an unsigned subtraction. The
+telemetry code now snapshots each timestamp once and clamps a future timestamp
+to age zero; this is a logging correctness fix, not a servo-control change.
+
+The hold test is now sufficient to proceed to a cautious root-joint motion
+freshness check, but internal servo parameter tuning remains deferred until
+motion logs confirm that the improved age bound persists under load.

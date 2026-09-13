@@ -1040,12 +1040,22 @@ public:
                 motion_lab_get_status(&status, now_us);
                 if (status.active) {
                     short command_pos[MOTOR_NUM];
+                    uint32_t feedback_ts_ms[MOTOR_NUM];
                     uint32_t feedback_age_ms[MOTOR_NUM];
                     for (int i = 0; i < MOTOR_NUM; ++i) {
                         command_pos[i] = static_cast<short>(motor[i].ZeroPos +
                             status.command_deg[i] / M_A * M_N);
-                        feedback_age_ms[i] = motor[i].FbTimestampMs == 0
-                            ? UINT32_MAX : now_ms - motor[i].FbTimestampMs;
+                        feedback_ts_ms[i] = motor[i].FbTimestampMs;
+                        if (feedback_ts_ms[i] == 0) {
+                            feedback_age_ms[i] = UINT32_MAX;
+                        } else if (feedback_ts_ms[i] > now_ms) {
+                            // The RX task can update the timestamp between the
+                            // now_ms sample and this snapshot. Do not expose an
+                            // unsigned wraparound as a multi-billion-ms age.
+                            feedback_age_ms[i] = 0;
+                        } else {
+                            feedback_age_ms[i] = now_ms - feedback_ts_ms[i];
+                        }
                     }
                     if (!header_emitted) {
                         printf("MLAB,ts_ms,experiment,trajectory,elapsed_ms,total_ms,cmd_deg[5],cmd_pos[5],fb_pos[5],fb_speed_raw[5],fb_load_raw[5],fb_ts_ms[5],fb_age_ms[5]\\r\\n");
@@ -1063,11 +1073,11 @@ public:
                            motor[0].FbPos, motor[1].FbPos, motor[2].FbPos, motor[3].FbPos, motor[4].FbPos,
                            motor[0].FbSpd, motor[1].FbSpd, motor[2].FbSpd, motor[3].FbSpd, motor[4].FbSpd,
                            motor[0].FbTor, motor[1].FbTor, motor[2].FbTor, motor[3].FbTor, motor[4].FbTor,
-                           static_cast<unsigned long>(motor[0].FbTimestampMs),
-                           static_cast<unsigned long>(motor[1].FbTimestampMs),
-                           static_cast<unsigned long>(motor[2].FbTimestampMs),
-                           static_cast<unsigned long>(motor[3].FbTimestampMs),
-                           static_cast<unsigned long>(motor[4].FbTimestampMs),
+                           static_cast<unsigned long>(feedback_ts_ms[0]),
+                           static_cast<unsigned long>(feedback_ts_ms[1]),
+                           static_cast<unsigned long>(feedback_ts_ms[2]),
+                           static_cast<unsigned long>(feedback_ts_ms[3]),
+                           static_cast<unsigned long>(feedback_ts_ms[4]),
                            static_cast<unsigned long>(feedback_age_ms[0]),
                            static_cast<unsigned long>(feedback_age_ms[1]),
                            static_cast<unsigned long>(feedback_age_ms[2]),
