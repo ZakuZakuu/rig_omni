@@ -34,9 +34,13 @@ SCS009 EEPROM write.
 - `manifest.json`: exact protocol and per-run metadata;
 - `*.log`: immutable UART captures;
 - `analysis/metrics.csv`: per-run low-level motion metrics;
+- `analysis/normalized.csv`: 50 ms fixed-grid derived telemetry for comparable
+  velocity/error metrics (raw event timing is kept separately);
 - `analysis/events.jsonl`: dwell/jump records with position, direction,
   commanded velocity, measured speed raw, load, dwell duration, jump size, and
-  timestamp;
+  timestamp. Metrics also include reversal delay and command travel until the
+  feedback moves two counts in the new direction (a backlash-style proxy, not a
+  mechanical free-play measurement);
 - `analysis/classification.json`: machine-readable category candidates and
   confidence;
 - `analysis/joint0_motion.svg`: dependency-free command/feedback plot.

@@ -60,6 +60,77 @@ def parse_capture(path: Path, joint: int = 0) -> list[dict[str, float]]:
     return rows
 
 
+def resample_fixed_dt(rows: list[dict[str, float]], dt_ms: float = 50.0) -> list[dict[str, float]]:
+    """Linearly resample comparable signals onto a fixed grid.
+
+    This follows BAM's preprocessing discipline. Raw rows remain the source for
+    event timing so interpolation cannot erase a short dwell/jump.
+    """
+    if len(rows) < 2:
+        return rows[:]
+    start = rows[0]["ts_ms"]
+    end = rows[-1]["ts_ms"]
+    fields = ("cmd_deg", "cmd_pos", "fb_pos", "fb_speed_raw", "fb_load_raw", "fb_age_ms", "voltage_v")
+    normalized: list[dict[str, float]] = []
+    source_index = 0
+    sample_ts = start
+    while sample_ts <= end + 0.001:
+        while source_index + 1 < len(rows) and rows[source_index + 1]["ts_ms"] < sample_ts:
+            source_index += 1
+        left = rows[source_index]
+        right = rows[min(source_index + 1, len(rows) - 1)]
+        span = max(right["ts_ms"] - left["ts_ms"], 1.0)
+        alpha = min(1.0, max(0.0, (sample_ts - left["ts_ms"]) / span))
+        row = {"ts_ms": sample_ts, "elapsed_ms": sample_ts - start, "stale": int(left["stale"])}
+        for field in fields:
+            row[field] = left[field] + alpha * (right[field] - left[field])
+        normalized.append(row)
+        sample_ts += dt_ms
+    for previous, current in zip(normalized, normalized[1:]):
+        current["cmd_offset_deg"] = current["cmd_deg"] - normalized[0]["cmd_deg"]
+        current["cmd_velocity_deg_s"] = (current["cmd_deg"] - previous["cmd_deg"]) / (dt_ms / 1000.0)
+        current["fb_delta_counts"] = current["fb_pos"] - previous["fb_pos"]
+        current["dt_ms"] = dt_ms
+    if normalized:
+        normalized[0]["cmd_offset_deg"] = 0.0
+        normalized[0]["cmd_velocity_deg_s"] = 0.0
+        normalized[0]["fb_delta_counts"] = 0.0
+        normalized[0]["dt_ms"] = 0.0
+    return normalized
+
+
+def reversal_metrics(rows: list[dict[str, float]]) -> tuple[list[float], list[float]]:
+    """Estimate reversal response delay and command travel before feedback moves.
+
+    The latter is a backlash-style proxy, not a mechanical free-play claim: the
+    arm has no external force fixture and the feedback itself is quantized.
+    """
+    delays_ms: list[float] = []
+    backlash_deg: list[float] = []
+    for index in range(1, len(rows)):
+        previous = rows[index - 1]
+        current = rows[index]
+        old_velocity = previous["cmd_velocity_deg_s"]
+        new_velocity = current["cmd_velocity_deg_s"]
+        if abs(old_velocity) < 0.5 or abs(new_velocity) < 0.5 or old_velocity * new_velocity >= 0:
+            continue
+        new_sign = 1.0 if new_velocity > 0 else -1.0
+        command_travel_counts = 0.0
+        reversal_feedback_pos = current["fb_pos"]
+        response_ts: float | None = None
+        for later_index in range(index, len(rows)):
+            later = rows[later_index]
+            prior_later = rows[max(index, later_index - 1)]
+            command_travel_counts += abs(later["cmd_pos"] - prior_later["cmd_pos"])
+            if new_sign * (later["fb_pos"] - reversal_feedback_pos) >= 2.0:
+                response_ts = later["ts_ms"]
+                break
+        if response_ts is not None:
+            delays_ms.append(max(0.0, response_ts - current["ts_ms"]))
+            backlash_deg.append(command_travel_counts * 300.0 / 1024.0)
+    return delays_ms, backlash_deg
+
+
 def _percentile(values: list[float], fraction: float) -> float:
     if not values:
         return 0.0
@@ -98,9 +169,10 @@ def analyze_run(rows: list[dict[str, float]], metadata: dict) -> tuple[dict, lis
         dwell_start = None
         dwell_ms = 0.0
 
-    command_errors = [row["fb_pos"] - row["cmd_pos"] for row in rows]
-    moving = [row for row in rows if abs(row["cmd_velocity_deg_s"]) > 0.35]
-    hold_rows = [row for row in rows if abs(row["cmd_velocity_deg_s"]) <= 0.35]
+    normalized = resample_fixed_dt(rows)
+    command_errors = [row["fb_pos"] - row["cmd_pos"] for row in normalized]
+    moving = [row for row in normalized if abs(row["cmd_velocity_deg_s"]) > 0.35]
+    hold_rows = [row for row in normalized if abs(row["cmd_velocity_deg_s"]) <= 0.35]
     hold_positions = [row["fb_pos"] for row in hold_rows]
     endpoint = max(abs(amplitude), 1.0)
     signed_feedback = [sign * (row["fb_pos"] - rows[0]["fb_pos"]) / (1024.0 / 300.0) for row in rows]
@@ -108,6 +180,7 @@ def analyze_run(rows: list[dict[str, float]], metadata: dict) -> tuple[dict, lis
     jitter_counts = 0.0
     if hold_positions:
         jitter_counts = max(hold_positions) - min(hold_positions)
+    reversal_delays_ms, backlash_deg = reversal_metrics(rows)
     metric = {
         "run": metadata["run"],
         "direction": direction,
@@ -129,6 +202,10 @@ def analyze_run(rows: list[dict[str, float]], metadata: dict) -> tuple[dict, lis
         "voltage_max_v": max(row["voltage_v"] for row in rows),
         "stale_rows": sum(int(row["stale"]) for row in rows),
         "feedback_age_p95_ms": _percentile([row["fb_age_ms"] for row in rows], 0.95),
+        "fixed_dt_ms": 50.0,
+        "reversal_count": len(reversal_delays_ms),
+        "reversal_delay_median_ms": statistics.median(reversal_delays_ms) if reversal_delays_ms else 0.0,
+        "reversal_command_travel_median_deg": statistics.median(backlash_deg) if backlash_deg else 0.0,
     }
     # A normalized guardrail score. Lower is better, but it is not a perceptual
     # selector and is deliberately not used to overwrite a profile.
@@ -215,12 +292,29 @@ def analyze_directory(input_dir: Path, manifest_path: Path, output_dir: Path) ->
     all_metrics: list[dict] = []
     all_events: list[dict] = []
     plot_runs: list[tuple[dict, list[dict]]] = []
+    normalized_rows: list[dict] = []
     for metadata in manifest["runs"]:
         rows = parse_capture(input_dir / metadata["log"])
         metric, events = analyze_run(rows, metadata)
         all_metrics.append(metric)
         all_events.extend(events)
         plot_runs.append((metadata, rows))
+        for row in resample_fixed_dt(rows):
+            normalized_rows.append({
+                "run": metadata["run"],
+                "direction": metadata.get("direction", ""),
+                "ts_ms": row["ts_ms"],
+                "elapsed_ms": row["elapsed_ms"],
+                "cmd_deg": row["cmd_deg"],
+                "cmd_pos": row["cmd_pos"],
+                "fb_pos": row["fb_pos"],
+                "cmd_velocity_deg_s": row["cmd_velocity_deg_s"],
+                "fb_speed_raw": row["fb_speed_raw"],
+                "fb_load_raw": row["fb_load_raw"],
+                "fb_age_ms": row["fb_age_ms"],
+                "voltage_v": row["voltage_v"],
+                "stale": row["stale"],
+            })
     output_dir.mkdir(parents=True, exist_ok=True)
     with (output_dir / "metrics.csv").open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=sorted(all_metrics[0]))
@@ -229,6 +323,10 @@ def analyze_directory(input_dir: Path, manifest_path: Path, output_dir: Path) ->
     with (output_dir / "events.jsonl").open("w") as handle:
         for event in all_events:
             handle.write(json.dumps(event, sort_keys=True) + "\n")
+    with (output_dir / "normalized.csv").open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(normalized_rows[0]))
+        writer.writeheader()
+        writer.writerows(normalized_rows)
     classification = classify(all_metrics, all_events)
     summary = {"classification": classification, "runs": all_metrics, "event_count": len(all_events)}
     (output_dir / "classification.json").write_text(json.dumps(summary, indent=2) + "\n")

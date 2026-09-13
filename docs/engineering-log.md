@@ -541,3 +541,14 @@ The reusable profile is `calibration/profiles/joint0.yaml`, kept separate from
 Motion Engine source. It records the baseline metrics and leaves directional
 compensation null/disabled. The raw matrix and analysis are preserved outside
 Git under `backups/motion-lab-2026-09-13-auto-calibration/`.
+
+## 2026-09-13 — Reference review before further identification
+
+Before adding more custom identification math, the reference review in
+`docs/reference-review-auto-calibration.md` compared BAM/bam-feetech,
+Robonine's UART-servo backlash study, Klipper's calibration architecture, and
+LeRobot's SCS table. The implementation now follows the reusable parts: an
+excitation manifest, immutable raw captures, fixed-grid derived data, separate
+reversal metrics, candidate scoring, and a persisted-but-bypassable profile.
+The pendulum/CMA-ES friction fit, external backlash fixture, input-shaper FFT,
+and unverified SCS009 physical parameters remain explicitly out of scope.
