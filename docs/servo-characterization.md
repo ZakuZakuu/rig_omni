@@ -98,6 +98,50 @@ References:
 - [FEETECH SCS009 product specification](https://www.feetechrc.com/en/6v-23kg-cm-dual-axis-serial-bus-steering-gear.html)
 - [FEETECH protocol manual mirror](https://files.seeedstudio.com/wiki/robotics/Actuator/feetech/Communication_Protocol_Manual.pdf)
 
+## Automatic CW-stutter screen
+
+The bounded screen is reproducible from the firmware directory:
+
+```bash
+python tools/motion_lab/characterize_stutter.py \
+  --port "$RIG_PORT" \
+  --output-dir backups/motion-lab-YYYY-MM-DD-auto-characterization
+```
+
+It repeats the same positive/CW 10° minimum-jerk out-and-back three times at
+8, 15, and 30°/s velocity limits. It analyzes only the outbound half and
+requires a feedback step larger than the commanded sample step, so ordinary
+encoder quantization is not reported as a jump. Re-running the classifier over
+existing captures without touching the arm is supported with `--analyze-only`.
+
+The 2026-09-13 run produced 28 candidate jump events across nine valid captures.
+Relative command-position spread was 2.22°, absolute event-time spread was
+359 ms, and event rates were 2.67/3.33/3.33 per run at 8/15/30°/s. This is
+`mixed-or-under-sampled`, not evidence for a position LUT or a strong velocity
+law; normalized event phase alone is not treated as time locking.
+
+For a small reversible follow-up screen, the firmware exposes a RAM-only
+directional host command deadband:
+
+```text
+mlab comp off
+mlab comp 0 <cw_deadband_mdeg> <ccw_deadband_mdeg>
+mlab comp show
+```
+
+`tools/motion_lab/search_compensation.py` tests factory (A), CW=0 (B), and
+CW=125 mdeg (C), with CCW fixed at 250 mdeg, using two identical 10° runs per
+candidate. It restores `mlab comp off` in a cleanup path. The profile does not
+write servo EEPROM and is disabled by default; telemetry only rejects stale or
+out-of-voltage runs and cannot select the final human-visible winner.
+
+The 2026-09-13 automated screen had no stale rows and 8.0–8.1 V for all
+candidates; telemetry scores were effectively tied (C marginally lower). The
+human A/B/C captures are under
+`backups/motion-lab-2026-09-13-auto-compensation/human_ab/`. The profile is
+currently left disabled pending visual choice. If all three look equivalent,
+retain factory behavior and move on rather than escalating actuator tuning.
+
 ## Characterization matrix
 
 Use minimum-jerk, one root/high-load joint at a time, fixed amplitude and limits.

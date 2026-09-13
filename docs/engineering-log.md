@@ -487,3 +487,32 @@ The next firmware revision adds separate `cw_deadband` and `ccw_deadband`
 commands. This preserves the factory pair (`0x01/0x01`) and makes it possible to
 change only the direction-specific register before comparing the same physical
 direction again. No P, D, or startup-force value is changed by this revision.
+
+## 2026-09-13 — Bounded automatic CW-stutter screen
+
+The first automatic characterization attempt produced empty files because the
+WSL serial session briefly lost its stream. `esptool chip_id` still responded,
+and a fresh UART session recovered normal output; the empty files are not treated
+as experimental data. The capture script now fails immediately when no telemetry
+rows are present and supports `--analyze-only` for offline reclassification.
+
+Nine valid captures (three repetitions at each 8, 15, and 30°/s limit) were then
+collected with joint 0, positive/CW 10°, minimum-jerk, 5 s out-and-back, and the
+same 60°/s² acceleration limit. The conservative outbound jump detector found
+28 events. Relative command-position spread was 2.22°, event-time spread was
+359 ms, and event rates were 2.67, 3.33, and 3.33 per run. The result is
+`mixed-or-under-sampled`; no position LUT, velocity law, or time-lock claim is
+justified from this matrix.
+
+To close the issue quickly without another EEPROM experiment, a RAM-only Motion
+Lab profile was added for per-joint CW/CCW host command deadbands. It is disabled
+by default and does not affect IK/action control or SCS009 registers. A bounded
+screen compared A=factory (250/250 mdeg), B=CW 0/CCW 250 mdeg, and C=CW
+125/CCW 250 mdeg, two repetitions each. All runs had valid feedback, no stale
+rows, and 8.0–8.1 V; telemetry scores were effectively tied, with only a
+marginal numerical edge for C. Human visual choice therefore remains decisive.
+The raw matrix is under
+`backups/motion-lab-2026-09-13-auto-compensation/`; the explicit A/B/C motion
+captures are under its `human_ab/` subdirectory. The profile was restored to
+`mlab comp off` after the comparison. No further automatic actuator tuning is
+planned unless one candidate is visibly and repeatably better.

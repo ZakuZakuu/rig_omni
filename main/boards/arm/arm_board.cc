@@ -87,6 +87,9 @@ void PrintMotionLabConsoleHelp() {
            "  mlab poll <joint 0..4> <period_ms 5..100>  (selected-joint high-rate feedback)\r\n"
            "  mlab poll off\r\n"
            "  mlab poll stats\r\n"
+           "  mlab comp off\r\n"
+           "  mlab comp show\r\n"
+           "  mlab comp <joint 0..4> <cw_deadband_mdeg 0..2000> <ccw_deadband_mdeg 0..2000>\r\n"
            "  mlab voltage  (read-only ID1 input voltage)\r\n"
            "  mlab status   (read-only live/error-latch snapshot)\r\n"
            "  mlab tune restore\r\n"
@@ -1182,6 +1185,45 @@ public:
                 }
                 if (strcmp(line, "mlab poll stats") == 0) {
                     xgo_feedback_poll_print_stats();
+                    continue;
+                }
+                if (strcmp(line, "mlab comp off") == 0) {
+                    if (motion_lab_is_active()) {
+                        printf("MLAB_COMP busy; stop Motion Lab before changing profile\r\n");
+                    } else {
+                        motion_lab_set_compensation({false, 0, 0.0f, 0.0f});
+                        printf("MLAB_COMP disabled\r\n");
+                    }
+                    continue;
+                }
+                if (strcmp(line, "mlab comp show") == 0) {
+                    MotionLabCompensationProfile profile = {};
+                    motion_lab_get_compensation(&profile);
+                    printf("MLAB_COMP enabled=%d,joint=%u,cw_deadband_mdeg=%d,ccw_deadband_mdeg=%d\r\n",
+                           profile.enabled ? 1 : 0,
+                           static_cast<unsigned>(profile.joint_index),
+                           static_cast<int>(profile.positive_deadband_deg * 1000.0f + 0.5f),
+                           static_cast<int>(profile.negative_deadband_deg * 1000.0f + 0.5f));
+                    continue;
+                }
+                int comp_joint = 0;
+                int comp_cw_mdeg = 0;
+                int comp_ccw_mdeg = 0;
+                if (sscanf(line, "mlab comp %d %d %d", &comp_joint, &comp_cw_mdeg,
+                           &comp_ccw_mdeg) == 3) {
+                    if (comp_joint < 0 || comp_joint >= MOTOR_NUM ||
+                        comp_cw_mdeg < 0 || comp_cw_mdeg > 2000 ||
+                        comp_ccw_mdeg < 0 || comp_ccw_mdeg > 2000) {
+                        printf("MLAB_COMP invalid; joint=0..4 deadbands=0..2000 mdeg\r\n");
+                    } else if (motion_lab_is_active()) {
+                        printf("MLAB_COMP busy; stop Motion Lab before changing profile\r\n");
+                    } else {
+                        motion_lab_set_compensation({true, static_cast<uint8_t>(comp_joint),
+                                                     comp_cw_mdeg / 1000.0f,
+                                                     comp_ccw_mdeg / 1000.0f});
+                        printf("MLAB_COMP enabled=1,joint=%d,cw_deadband_mdeg=%d,ccw_deadband_mdeg=%d\r\n",
+                               comp_joint, comp_cw_mdeg, comp_ccw_mdeg);
+                    }
                     continue;
                 }
                 if (strcmp(line, "mlab voltage") == 0) {

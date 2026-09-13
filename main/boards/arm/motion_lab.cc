@@ -29,11 +29,22 @@ struct MotionLabState {
 };
 
 MotionLabState state = {};
+MotionLabCompensationProfile compensation = {};
 
 float clampf(float value, float low, float high) {
     if (value < low) return low;
     if (value > high) return high;
     return value;
+}
+
+float command_deadband_for(const MotionLabState& current, int joint, float next) {
+    if (!compensation.enabled || compensation.joint_index != joint) {
+        return current.config.deadband_deg;
+    }
+    const float delta = next - current.sent_deg[joint];
+    if (delta > 0.0001f) return compensation.positive_deadband_deg;
+    if (delta < -0.0001f) return compensation.negative_deadband_deg;
+    return current.config.deadband_deg;
 }
 
 float easing(float normalized, MotionLabTrajectory trajectory) {
@@ -207,7 +218,12 @@ void motion_lab_update(uint32_t now_us) {
         // Deadband applies only to bus writes below; resetting this value to
         // sent_deg here would prevent sub-deadband 2 ms steps from accumulating.
         state.command_deg[i] = next;
-        if (fabsf(next - state.sent_deg[i]) >= state.config.deadband_deg) {
+        const float delta = fabsf(next - state.sent_deg[i]);
+        const float command_deadband = command_deadband_for(state, i, next);
+        // A zero deadband means "send every command-period tick", not that a
+        // numerically unchanged target should keep the dirty flag set forever.
+        if ((command_deadband <= 0.0f && delta > 0.0001f) ||
+            (command_deadband > 0.0f && delta >= command_deadband)) {
             changed = true;
         }
     }
@@ -254,6 +270,15 @@ void motion_lab_get_status(MotionLabStatus* out_status, uint32_t now_us) {
     for (int i = 0; i < MOTION_LAB_JOINTS; ++i) {
         out_status->command_deg[i] = state.command_deg[i];
     }
+}
+
+void motion_lab_set_compensation(const MotionLabCompensationProfile& profile) {
+    compensation = profile;
+}
+
+void motion_lab_get_compensation(MotionLabCompensationProfile* out_profile) {
+    if (out_profile == nullptr) return;
+    *out_profile = compensation;
 }
 
 const char* motion_lab_start_result_string(MotionLabStartResult result) {

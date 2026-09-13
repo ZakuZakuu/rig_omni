@@ -56,6 +56,17 @@ struct MotionLabStatus {
     float command_deg[MOTION_LAB_JOINTS];
 };
 
+// Optional diagnostic-only command deadband compensation.  It is disabled by
+// default and never affects the normal IK/action path or servo EEPROM.  The
+// positive direction is the physical CW direction for the current joint-0
+// calibration; callers should label the direction explicitly in logs.
+struct MotionLabCompensationProfile {
+    bool enabled;
+    uint8_t joint_index;
+    float positive_deadband_deg;
+    float negative_deadband_deg;
+};
+
 // Start from recently observed servo positions. The caller supplies raw counts
 // so this module stays independent from UART/servo implementation details.
 MotionLabStartResult motion_lab_start(const MotionLabConfig& config,
@@ -72,6 +83,9 @@ bool motion_lab_should_send_command();
 void motion_lab_get_command_deg(float out_deg[MOTION_LAB_JOINTS]);
 bool motion_lab_take_finished();
 void motion_lab_get_status(MotionLabStatus* out_status, uint32_t now_us);
+
+void motion_lab_set_compensation(const MotionLabCompensationProfile& profile);
+void motion_lab_get_compensation(MotionLabCompensationProfile* out_profile);
 
 const char* motion_lab_start_result_string(MotionLabStartResult result);
 
