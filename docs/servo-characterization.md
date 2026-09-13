@@ -134,3 +134,7 @@ compact/extended pose command exists yet. The ID-1 voltage check measured 8.00 V
 at idle and 8.00–8.10 V during motion; all rows reported `speed_cmd_raw=350`.
 These observations support continuing with factory settings and do not justify
 PID or EEPROM tuning by themselves.
+
+The voltage-enabled rerun on commit `3d276c2` repeated each duration three times
+and preserved `speed_cmd_raw=350` in all 9 captures. Voltage stayed within
+7.90–8.10 V, with no stale rows; the raw logs are under `/tmp/rig_voltage_duration_*`.

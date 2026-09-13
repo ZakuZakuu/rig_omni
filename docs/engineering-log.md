@@ -350,3 +350,23 @@ deadband, P, D, or startup-force value has been applied. The one restore command
 used for this check wrote the captured factory values back and the subsequent
 read-only dump verified that there was no net parameter change. I remains
 untouched. Continue characterization with the factory values before any tuning.
+
+### Voltage-enabled repeat captures
+
+To ensure every characterization record carries the new supply and runtime-speed
+fields, the same three-duration matrix was rerun on the flashed `3d276c2` build.
+All nine captures reported `speed_cmd_raw=350`, zero stale rows, and the voltage
+ranges below. The small 7.90–8.10 V spread is the servo's 0.1 V reporting
+resolution; it is not a sustained sag.
+
+| duration | repetition | rows | root feedback range (counts) | max j0 age (ms) | servo voltage (V) |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1.5 s | 1 / 2 / 3 | 25 / 25 / 26 | 464–511 / 529–578 / 556–595 | 143 / 166 / 206 | 8.00–8.10 / 8.10 / 8.00–8.10 |
+| 3 s | 1 / 2 / 3 | 51 / 52 / 51 | 467–502 / 471–507 / 477–510 | 164 / 140 / 147 | 8.10 / 8.10 / 8.10 |
+| 6 s | 1 / 2 / 3 | 104 / 103 / 103 | 481–517 / 479–515 / 478–511 | 141 / 172 / 197 | 8.10 / 7.90–8.10 / 8.00–8.10 |
+
+These captures confirm the telemetry path is carrying voltage and command-speed
+context without changing the factory control values. The root-joint feedback
+excursions remain repeatable enough for baseline comparison, but the different
+starting poses mean their absolute encoder ranges should not be compared as a
+load estimate.
