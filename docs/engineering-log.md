@@ -122,3 +122,19 @@ The next code revision keeps a poll ID unchanged when the UART send lock rejects
 a status request. This prevents a dropped request from silently advancing the
 round-robin schedule. It builds successfully as the pending commit after this
 log entry; it has not yet been flashed or hardware-tested.
+
+## 2026-09-13 — Follow-up visible run exposes long freshness stalls
+
+The next pasted `mlab visible 0` log covered 47 rows and the full 4-second
+experiment. Joint 0 commanded position moved `555..590` counts and feedback
+reached `556..585`, so the visible motion still tracked. However, feedback ages
+were not yet acceptable for characterization: per-joint medians were 60–78 ms,
+but maxima reached 773–912 ms, with a broad 1.8–2.6 s stale interval. A Wi-Fi
+TLS error was printed during the same run, and the log has no firmware commit
+marker, so the cause is not yet isolated between the older flashed build,
+UART-send contention, and system-load/serial logging effects.
+
+This run is therefore a useful observability failure record, not a servo-quality
+measurement. Do not tune internal P/D/dead-zone values from it. The retry-on-
+dropped-poll build (`44773a3`) must be flashed and repeated under the same
+experiment before deciding whether more bus scheduling work is needed.
