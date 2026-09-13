@@ -77,3 +77,13 @@ The current working hypothesis is that visible stick-slip may correlate with
   parameter write are part of this milestone.
 - The next hardware action is to flash this build, run `mlab params`, and save
   the complete UART output before any internal parameter experiment.
+
+### Validation record
+
+- Firmware commit: `0930849`.
+- ESP-IDF: v5.5.3, target `esp32s3`, `CONFIG_BOARD_TYPE_ARM=y`.
+- Host trajectory tests: 5 passed.
+- Firmware build: `ninja -C build all` passed; application binary has 26% free
+  space in the smallest app partition.
+- Hardware validation: pending because no `$RIG_PORT`/USB serial device was
+  attached to this engineering session. No flash or motion command was issued.
