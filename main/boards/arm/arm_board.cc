@@ -84,6 +84,9 @@ void PrintMotionLabConsoleHelp() {
            "  mlab run <experiment 0..2 or 4> <trajectory 0..2> <joint 0..4> <amplitude_deg 1..10> "
            "<duration_ms 500..30000> <stagger_ms 0..2000> <max_velocity_deg_s 1..90> "
            "<max_acceleration_deg_s2 1..500> <deadband_mdeg 0..2000>\r\n"
+           "  mlab poll <joint 0..4> <period_ms 5..100>  (selected-joint high-rate feedback)\r\n"
+           "  mlab poll off\r\n"
+           "  mlab poll stats\r\n"
            "  mlab params  (read-only SCS009 factory/control snapshot)\r\n"
            "  mlab stop\r\n"
            "  mlab help\r\n");
@@ -1011,7 +1014,10 @@ public:
             while (true) {
                 xgo_rx();
                 imu_read_once();
-                vTaskDelay(pdMS_TO_TICKS(XGO_RX_TASK_INTERVAL_MS));
+                // Characterization mode shortens the parser cadence together
+                // with the selected-joint poller; normal firmware remains at
+                // the stock 20 ms feedback task period.
+                vTaskDelay(pdMS_TO_TICKS(xgo_feedback_poll_interval_ms()));
             }
             vTaskDelete(NULL);
         }, "xgo_rx_task", 4096, this, 5, &xgo_rx_task_handle_, 1);
@@ -1023,7 +1029,7 @@ public:
             (void)arg;
             while (true) {
                 xgo_feedback_poll();
-                vTaskDelay(pdMS_TO_TICKS(20));
+                vTaskDelay(pdMS_TO_TICKS(xgo_feedback_poll_interval_ms()));
             }
             vTaskDelete(NULL);
         }, "xgo_feedback_poll", 3072, this, 4, &xgo_feedback_poll_task_handle_, 1);
@@ -1058,12 +1064,12 @@ public:
                         }
                     }
                     if (!header_emitted) {
-                        printf("MLAB,ts_ms,experiment,trajectory,elapsed_ms,total_ms,cmd_deg[5],cmd_pos[5],fb_pos[5],fb_speed_raw[5],fb_load_raw[5],fb_ts_ms[5],fb_age_ms[5]\\r\\n");
+                        printf("MLAB,ts_ms,experiment,trajectory,elapsed_ms,total_ms,cmd_deg[5],cmd_pos[5],fb_pos[5],fb_speed_raw[5],fb_load_raw[5],fb_ts_ms[5],fb_age_ms[5],fb_stale[5]\r\n");
                         header_emitted = true;
                     }
                     printf("MLAB,%lu,%d,%d,%lu,%lu,%.3f|%.3f|%.3f|%.3f|%.3f,"
                            "%d|%d|%d|%d|%d,%d|%d|%d|%d|%d,%.0f|%.0f|%.0f|%.0f|%.0f,"
-                           "%d|%d|%d|%d|%d,%lu|%lu|%lu|%lu|%lu,%lu|%lu|%lu|%lu|%lu\\r\\n",
+                           "%d|%d|%d|%d|%d,%lu|%lu|%lu|%lu|%lu,%lu|%lu|%lu|%lu|%lu,%d|%d|%d|%d|%d\r\n",
                            static_cast<unsigned long>(now_ms), status.experiment, status.trajectory,
                            static_cast<unsigned long>(status.elapsed_ms),
                            static_cast<unsigned long>(status.total_duration_ms),
@@ -1082,7 +1088,10 @@ public:
                            static_cast<unsigned long>(feedback_age_ms[1]),
                            static_cast<unsigned long>(feedback_age_ms[2]),
                            static_cast<unsigned long>(feedback_age_ms[3]),
-                           static_cast<unsigned long>(feedback_age_ms[4]));
+                           static_cast<unsigned long>(feedback_age_ms[4]),
+                           motor[0].FbStale ? 1 : 0, motor[1].FbStale ? 1 : 0,
+                           motor[2].FbStale ? 1 : 0, motor[3].FbStale ? 1 : 0,
+                           motor[4].FbStale ? 1 : 0);
                 } else {
                     header_emitted = false;
                 }
@@ -1096,7 +1105,7 @@ public:
             (void)arg;
             char line[192];
             size_t line_length = 0;
-            printf("MLAB_CONSOLE ready; feedback_poll=20ms; ack=on; retry=on; type 'mlab help' and press Enter\r\n");
+            printf("MLAB_CONSOLE ready; feedback_poll=20ms; ack=on; retry=bounded; type 'mlab help' and press Enter\r\n");
             while (true) {
                 // ESP-IDF monitor configures UART0 in raw mode, so stdio can
                 // return after every character rather than every newline.
@@ -1154,6 +1163,29 @@ public:
                         printf("MLAB_CONSOLE stop requested\r\n");
                     } else {
                         printf("MLAB_CONSOLE no active experiment\r\n");
+                    }
+                    continue;
+                }
+                if (strcmp(line, "mlab poll off") == 0) {
+                    xgo_feedback_poll_disable();
+                    printf("MLAB_POLL disabled\r\n");
+                    continue;
+                }
+                if (strcmp(line, "mlab poll stats") == 0) {
+                    xgo_feedback_poll_print_stats();
+                    continue;
+                }
+                int poll_joint = 0;
+                int poll_period_ms = 0;
+                if (sscanf(line, "mlab poll %d %d", &poll_joint, &poll_period_ms) == 2) {
+                    if (poll_joint < 0 || poll_joint >= MOTOR_NUM ||
+                        poll_period_ms < 5 || poll_period_ms > 100) {
+                        printf("MLAB_POLL invalid; joint=0..4 period_ms=5..100\r\n");
+                    } else {
+                        xgo_feedback_poll_config(static_cast<uint8_t>(poll_joint),
+                                                 static_cast<uint32_t>(poll_period_ms));
+                        printf("MLAB_POLL enabled: joint=%d period_ms=%d; use 'mlab poll stats' to measure\r\n",
+                               poll_joint, poll_period_ms);
                     }
                     continue;
                 }

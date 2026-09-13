@@ -15,6 +15,32 @@ One ID is requested every 20 ms, so the nominal complete five-ID cycle is 100 ms
 - `fb_age_ms[5]`: telemetry time minus that sample timestamp;
 - `fb_pos[5]`, `fb_speed_raw[5]`, `fb_load_raw[5]`: unchanged raw feedback
   fields. Load is an effort proxy, not a calibrated force.
+- `fb_stale[5]`: explicit stale marker. A joint is marked stale only after
+  three unanswered request attempts; a valid status packet clears the marker.
+
+The normal poller uses a 60 ms response timeout and three total attempts per
+request. After the third timeout it records a skip, marks that joint stale, and
+continues with the next ID. This bounds the damage from an unplugged or
+unresponsive servo instead of blocking the entire round-robin.
+
+For stick-slip characterization, enable selected-joint high-rate mode from the
+monitor (joint numbers are zero-based):
+
+```text
+mlab poll 0 5       # prioritize joint 0, request no faster than every 5 ms
+mlab poll stats     # print valid count, measured rate, max response gap, skips
+mlab poll off       # restore the normal five-joint round-robin
+```
+
+The selected joint is prioritized while the other joints remain background
+samples at roughly 100 ms. The receive parser also runs at the 5 ms diagnostic
+cadence. The configured period is only a request schedule; use the `rate_mHz`
+and `max_gap_ms` values from `mlab poll stats` as the measured reliable rate.
+In the final flashed test, a 5 ms request schedule produced approximately
+45.1 Hz valid responses with a 1.224 s worst gap under normal system load, so
+the result is not treated as a guaranteed 200 Hz feedback stream. Background
+slots did run (unlike the earlier scheduler bug), but the shared system load
+still caused occasional bounded skips.
 
 Reject or annotate samples with unexpectedly high age before using them for
 stick-slip or tracking conclusions.
@@ -64,3 +90,7 @@ Do not approach mechanical limits or intentionally stall a joint. The first
 question is whether visible stutter tracks load and very-low-speed portions of
 the same minimum-jerk profile; only after this baseline may one internal
 parameter (dead zone, P, D, or startup force) be changed and restored.
+
+The selected-joint mode is an observability aid, not a closed-loop controller.
+Do not interpret a high `fb_speed_raw` value as calibrated angular speed until
+the SCS009 scale is independently verified.

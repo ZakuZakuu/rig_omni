@@ -26,6 +26,7 @@ typedef struct
     short FbTor;
 	uint32_t FbTimestampMs;
 	uint32_t FbSequence;
+	bool FbStale;
 	short ZeroPos;
 	uint8_t Load;
 } Motor;
@@ -75,6 +76,10 @@ bool SendMotorCommand(uint8_t *pData, uint16_t size);
 void xgo_control();
 void xgo_rx();
 void xgo_feedback_poll();
+uint32_t xgo_feedback_poll_interval_ms();
+void xgo_feedback_poll_config(uint8_t joint_index, uint32_t period_ms);
+void xgo_feedback_poll_disable();
+void xgo_feedback_poll_print_stats();
 // Read-only SCS009 factory/control-table snapshot, printed to UART0.
 void xgo_dump_factory_parameters();
 //Action & Behavior Functions

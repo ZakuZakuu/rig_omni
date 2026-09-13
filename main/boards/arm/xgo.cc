@@ -164,6 +164,7 @@ void InitZeroPos(){
         motor[i].Load = 0;
 		motor[i].FbTimestampMs = 0;
 		motor[i].FbSequence = 0;
+		motor[i].FbStale = true;
     }
     if(res){
         // 已标定，启用舵机
@@ -338,6 +339,48 @@ static volatile bool servo_parameter_dump_active = false;
 static volatile uint8_t feedback_poll_id = 1;
 static volatile bool feedback_poll_waiting = false;
 static volatile uint32_t feedback_poll_sent_ms = 0;
+static volatile uint8_t feedback_poll_attempts = 0;
+static volatile uint32_t feedback_poll_skip_count[MOTOR_NUM] = {};
+static volatile bool feedback_high_rate_enabled = false;
+static volatile uint8_t feedback_high_rate_joint = 0;
+static volatile uint32_t feedback_high_rate_period_ms = 20;
+static volatile uint32_t feedback_high_rate_next_ms = 0;
+static volatile uint32_t feedback_background_next_ms = 0;
+static volatile uint8_t feedback_background_id = 1;
+static volatile uint32_t feedback_high_valid_count = 0;
+static volatile uint32_t feedback_high_first_response_ms = 0;
+static volatile uint32_t feedback_high_last_response_ms = 0;
+static volatile uint32_t feedback_high_max_gap_ms = 0;
+
+namespace {
+
+constexpr uint32_t kFeedbackRequestTimeoutMs = 60;
+constexpr uint8_t kFeedbackMaxAttempts = 3;
+constexpr uint32_t kFeedbackHighRateTaskIntervalMs = 5;
+constexpr uint32_t kFeedbackBackgroundPeriodMs = 100;
+
+uint8_t next_feedback_id(uint8_t current) {
+    return current >= MOTOR_NUM ? 1 : static_cast<uint8_t>(current + 1);
+}
+
+void reset_feedback_request() {
+    feedback_poll_waiting = false;
+    feedback_poll_attempts = 0;
+}
+
+void mark_feedback_skip(uint8_t id) {
+    if (id >= 1 && id <= MOTOR_NUM) {
+        const uint8_t index = id - 1;
+        feedback_poll_skip_count[index] = feedback_poll_skip_count[index] + 1;
+        motor[index].FbStale = true;
+    }
+}
+
+bool is_high_rate_id(uint8_t id) {
+    return feedback_high_rate_enabled && id == feedback_high_rate_joint + 1;
+}
+
+}  // namespace
 
 struct ServoParameterSpec {
     const char* name;
@@ -410,7 +453,7 @@ void xgo_dump_factory_parameters() {
     }
 
     servo_parameter_dump_active = true;
-    feedback_poll_waiting = false;
+    reset_feedback_request();
     vTaskDelay(pdMS_TO_TICKS(20));
     printf("SCS009_PARAM dump: read-only; no EEPROM unlock/write performed\r\n");
     printf("SCS009_PARAM,id,name,address,length,raw_hex,ts_ms\r\n");
@@ -517,11 +560,26 @@ void xgo_rx(){
                             motor[motor_index].FbTimestampMs =
                                 static_cast<uint32_t>(esp_timer_get_time() / 1000);
                             motor[motor_index].FbSequence++;
+                            motor[motor_index].FbStale = false;
                             if (feedback_poll_waiting && packet_id == feedback_poll_id) {
                                 feedback_poll_waiting = false;
-                                const uint8_t next_poll_id = feedback_poll_id >= MOTOR_NUM
-                                    ? 1 : static_cast<uint8_t>(feedback_poll_id + 1);
-                                feedback_poll_id = next_poll_id;
+                                const uint32_t response_ms = motor[motor_index].FbTimestampMs;
+                                if (is_high_rate_id(packet_id)) {
+                                    if (feedback_high_first_response_ms == 0) {
+                                        feedback_high_first_response_ms = response_ms;
+                                    } else {
+                                        const uint32_t gap = response_ms - feedback_high_last_response_ms;
+                                        if (gap > feedback_high_max_gap_ms) feedback_high_max_gap_ms = gap;
+                                    }
+                                    feedback_high_last_response_ms = response_ms;
+                                    feedback_high_valid_count = feedback_high_valid_count + 1;
+                                }
+                                feedback_poll_attempts = 0;
+                                // In high-rate mode keep the selected joint as the
+                                // priority target; normal mode advances round-robin.
+                                if (!feedback_high_rate_enabled || !is_high_rate_id(packet_id)) {
+                                    feedback_poll_id = next_feedback_id(feedback_poll_id);
+                                }
                             }
                             // printf("motor[%d].FbPos: %d \r\n", id, motor[id].FbPos);
                             // 检测堵转（示教模式中跳过：扭矩已关，反馈滞后是正常的）
@@ -550,16 +608,111 @@ void xgo_feedback_poll() {
     const uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
     if (feedback_poll_waiting) {
         // A sent request is not considered progress until its matching valid
-        // status packet is parsed. Retry the same ID after a bounded wait.
-        if (now_ms - feedback_poll_sent_ms < 60) {
+        // status packet is parsed. Retry the same ID after a bounded wait,
+        // then mark it stale and advance so one unplugged servo cannot block
+        // the rest of the round-robin indefinitely.
+        if (now_ms - feedback_poll_sent_ms < kFeedbackRequestTimeoutMs) {
             return;
         }
         feedback_poll_waiting = false;
+        if (feedback_poll_attempts < kFeedbackMaxAttempts) {
+            // Fall through and retry the same request below.
+        } else {
+            mark_feedback_skip(feedback_poll_id);
+            if (is_high_rate_id(feedback_poll_id)) {
+                feedback_high_rate_next_ms = now_ms + feedback_high_rate_period_ms;
+                feedback_poll_id = feedback_background_id;
+            } else {
+                feedback_poll_id = next_feedback_id(feedback_poll_id);
+            }
+            reset_feedback_request();
+        }
     }
+
+    if (feedback_high_rate_enabled && !feedback_poll_waiting) {
+        // A background slot must take precedence when due; otherwise a
+        // selected joint with a 5 ms period would permanently starve the other
+        // four IDs and their telemetry would age forever.
+        if (now_ms >= feedback_background_next_ms) {
+            // Keep all-joint telemetry alive at a lower rate while the selected
+            // joint receives priority samples.
+            if (feedback_background_id == feedback_high_rate_joint + 1) {
+                feedback_background_id = next_feedback_id(feedback_background_id);
+            }
+            feedback_poll_id = feedback_background_id;
+            feedback_background_id = next_feedback_id(feedback_background_id);
+            if (feedback_background_id == feedback_high_rate_joint + 1) {
+                feedback_background_id = next_feedback_id(feedback_background_id);
+            }
+            feedback_background_next_ms = now_ms + kFeedbackBackgroundPeriodMs;
+        } else if (now_ms >= feedback_high_rate_next_ms) {
+            feedback_poll_id = feedback_high_rate_joint + 1;
+        } else {
+            return;
+        }
+    }
+
     if (ReadMotorState(feedback_poll_id)) {
         feedback_poll_sent_ms = now_ms;
         feedback_poll_waiting = true;
+        feedback_poll_attempts = feedback_poll_attempts + 1;
+        if (feedback_high_rate_enabled && is_high_rate_id(feedback_poll_id)) {
+            feedback_high_rate_next_ms = now_ms + feedback_high_rate_period_ms;
+        }
     }
+}
+
+uint32_t xgo_feedback_poll_interval_ms() {
+    return feedback_high_rate_enabled ? kFeedbackHighRateTaskIntervalMs : 20;
+}
+
+void xgo_feedback_poll_config(uint8_t joint_index, uint32_t period_ms) {
+    if (joint_index >= MOTOR_NUM || period_ms < kFeedbackHighRateTaskIntervalMs || period_ms > 100) {
+        return;
+    }
+    feedback_high_rate_joint = joint_index;
+    feedback_high_rate_period_ms = period_ms;
+    feedback_high_rate_enabled = true;
+    feedback_high_rate_next_ms = 0;
+    feedback_background_next_ms = 0;
+    feedback_background_id = 1;
+    reset_feedback_request();
+    feedback_poll_id = joint_index + 1;
+    feedback_high_valid_count = 0;
+    feedback_high_first_response_ms = 0;
+    feedback_high_last_response_ms = 0;
+    feedback_high_max_gap_ms = 0;
+    for (int i = 0; i < MOTOR_NUM; ++i) {
+        feedback_poll_skip_count[i] = 0;
+    }
+}
+
+void xgo_feedback_poll_disable() {
+    feedback_high_rate_enabled = false;
+    reset_feedback_request();
+    feedback_poll_id = 1;
+}
+
+void xgo_feedback_poll_print_stats() {
+    const uint32_t first = feedback_high_first_response_ms;
+    const uint32_t last = feedback_high_last_response_ms;
+    const uint32_t span = last > first ? last - first : 0;
+    const uint32_t rate_mhz = span > 0
+        ? static_cast<uint32_t>((static_cast<uint64_t>(feedback_high_valid_count - 1) * 1000000ULL) / span)
+        : 0;
+    printf("MLAB_POLL stats: enabled=%d joint=%u period_ms=%lu valid=%lu span_ms=%lu rate_mHz=%lu max_gap_ms=%lu skips=%lu|%lu|%lu|%lu|%lu\r\n",
+           feedback_high_rate_enabled ? 1 : 0,
+           feedback_high_rate_joint,
+           static_cast<unsigned long>(feedback_high_rate_period_ms),
+           static_cast<unsigned long>(feedback_high_valid_count),
+           static_cast<unsigned long>(span),
+           static_cast<unsigned long>(rate_mhz),
+           static_cast<unsigned long>(feedback_high_max_gap_ms),
+           static_cast<unsigned long>(feedback_poll_skip_count[0]),
+           static_cast<unsigned long>(feedback_poll_skip_count[1]),
+           static_cast<unsigned long>(feedback_poll_skip_count[2]),
+           static_cast<unsigned long>(feedback_poll_skip_count[3]),
+           static_cast<unsigned long>(feedback_poll_skip_count[4]));
 }
 
 void detect_triple_click() {

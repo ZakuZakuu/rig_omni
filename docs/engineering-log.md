@@ -218,3 +218,52 @@ completing.
 This establishes 50 Hz sync writes as the current Motion Lab bus-rate baseline.
 It is sufficient to proceed with controlled duration/load comparisons, while
 logs should continue to retain and report occasional samples above 120 ms.
+
+The same root-joint test at 8 s duration revealed a separate system-level
+failure mode. Most samples remained below roughly 200 ms, but one shared stall
+around elapsed 5.0–6.0 s drove feedback ages above 1 s (maxima after warm-up:
+about 1136, 1111, 1442, 471, and 1081 ms for joints 1–5). A Wi-Fi TLS receive
+error was printed during that interval. Because the command was a single-joint
+test and the ages rose across all joints together, this is not evidence of
+root-joint stick-slip or servo tuning behavior. Longer-duration characterization
+is blocked until UART receive/poll scheduling is isolated from asynchronous
+Wi-Fi/camera work.
+
+The 50 Hz command cadence shares the same 20 ms period as the feedback poller,
+so a persistent phase collision is also possible. The next diagnostic build
+uses a 25 ms command period (40 Hz) while keeping the 2 ms trajectory update;
+this deliberately de-synchronizes command writes and feedback queries before
+adding deeper UART instrumentation.
+
+## 2026-09-13 — Bounded retries and measured selected-joint feedback rate
+
+The next diagnostic revision made the response-gated poller finite: each status
+request has a 60 ms timeout and three total attempts. On the final timeout the
+corresponding `Motor::FbStale` flag is set, a per-ID skip counter is incremented,
+and the scheduler continues with the next servo. A valid status packet clears
+the stale flag. Telemetry now includes `fb_stale[5]` so a stale sample cannot be
+mistaken for fresh data.
+
+The same revision added an explicit `mlab poll <joint> <period_ms>` mode. It
+prioritizes one selected ID (initially joint 0), keeps the remaining IDs as
+approximately 100 ms background samples, and shortens both the poll and receive
+task cadence to 5 ms when configured at the minimum period. `mlab poll stats`
+reports valid count, measured rate, maximum response gap, and skip counts.
+
+Hardware validation after flashing the build:
+
+- `mlab poll 0 5` with no active motion: 594 valid selected-joint responses over
+  13,154 ms, measured 45.1 Hz, maximum gap 1,224 ms, skip counts 4|1|1|1|1.
+  The configured 5 ms period is therefore not a guaranteed 200 Hz stream; the
+  long gap remains a system-load/transport issue to isolate. The high-rate
+  scheduler was then corrected so background slots cannot be starved by a
+  perpetually due selected-joint request.
+- With high-rate mode disabled, the controlled test
+  `mlab run 0 2 0 10 4000 0 15 30 0` completed and joint 0 tracked roughly
+  531..562 counts and back. The final run's five-joint feedback ages were
+  generally 0..170 ms and all `fb_stale` fields remained zero.
+
+These results improve observability and failure containment but do not justify
+PID, dead-zone, or startup-torque changes. Duration/load comparisons remain the
+next characterization step, with high-rate stats retained alongside each raw
+log.

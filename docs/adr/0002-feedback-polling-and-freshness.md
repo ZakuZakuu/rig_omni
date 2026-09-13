@@ -17,8 +17,11 @@ Use a dedicated low-priority feedback poll task. It requests one ID every 20 ms,
 so a complete five-joint cycle is approximately 100 ms (about 10 Hz per joint).
 The receive path records a millisecond timestamp for every valid state packet.
 Motion Lab telemetry reports both the per-joint sample timestamp and its age.
-The round-robin advances only after the matching ID's valid response is parsed;
-an unanswered request is retried instead of silently moving to the next ID.
+The round-robin advances only after the matching ID's valid response is parsed.
+An unanswered request is retried three times with a 60 ms timeout, then the
+joint is marked stale and the poller advances. An explicit selected-joint
+high-rate mode (5--100 ms request period) deprioritizes the other IDs and
+reports measured response rate and gaps.
 
 ## Consequences
 
@@ -27,7 +30,11 @@ an unanswered request is retried instead of silently moving to the next ID.
 - A characterization log can reject samples whose age is unexpectedly high.
 - 10 Hz per joint is a conservative first rate that leaves margin on the shared
   half-duplex servo bus; increasing it is a measured follow-up, not an assumption.
-- A missing response can lengthen one cycle, but it cannot make the log appear
-  fresh by skipping an unobserved joint.
+- A missing response can lengthen one cycle, but bounded retries prevent it from
+  blocking the rest of the bus indefinitely; `fb_stale[5]` makes the condition
+  visible in logs.
+- High-rate mode is deliberately opt-in. It changes only diagnostic poll/parser
+  cadence, and its measured rate is reported rather than inferred from the
+  configured request period.
 - The existing raw speed/load encodings are preserved. This phase improves
   freshness and observability before interpreting or tuning them.

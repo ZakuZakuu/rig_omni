@@ -9,8 +9,9 @@ constexpr float kCountsPerDeg = 1024.0f / 300.0f;
 constexpr int16_t kExperimentMinCount = 100;
 constexpr int16_t kExperimentMaxCount = 923;
 // Keep trajectory integration at the 2 ms control cadence, but limit actual
-// sync-write packets to 50 Hz so feedback queries retain bus bandwidth.
-constexpr uint32_t kCommandPeriodUs = 20000;
+// Keep the command cadence off the 20 ms feedback-poll period. The resulting
+// 40 Hz sync writes retain bus bandwidth and avoid a persistent phase collision.
+constexpr uint32_t kCommandPeriodUs = 25000;
 constexpr uint32_t kKeepaliveUs = 100000;
 
 struct MotionLabState {
