@@ -393,6 +393,28 @@ currently left at C pending the human visual choice. Do not apply another group
 until A, B, or C is selected by perceived smoothness; telemetry is retained for
 diagnosis but is not the selector.
 
+## 2026-09-13 — Unexpected ID2 torque loss; tuning paused
+
+Immediately after the A/B/C sequence, the user reported that the second servo
+from the base became limp. `mlab stop` found no active experiment. The servo
+recovered its holding torque after a robot restart, so the event is treated as a
+latched protection/drive-state incident until proven otherwise; no further motion
+test is authorized yet.
+
+Read-only checks after the restart found ID2 still responding and its complete
+control/protection snapshot unchanged from factory (temperature limit `0x37`,
+voltage limits `0x64/0x28`, max torque `0x03E8`, unloading/LED alarm `0x25`,
+protective torque `0x14`, protection time `0xC8`, P/D/I `0F/0F/00`, startup
+`0x0018`). ID1 reported 8.10 V. These checks do not prove which protection cause
+latched because the current parser does not expose a servo error/alarm byte.
+
+The temporary C setting was restored to factory values (`MLAB_TUNE
+restore_factory=1`) and read back: ID1 and ID2 both report startup `0x0018` with
+factory P/D/I and dead zones. The post-event captures are preserved under
+`backups/` with SHA-256 hashes. Startup-force optimization is paused; inspect
+servo temperature/protection indicators and reproduce only under direct human
+supervision after the cause is understood.
+
 ## 2026-09-13 — Comparable endpoint protocol and hold classification
 
 The original 1.5 s condition is excluded from speed comparisons. With the fixed
