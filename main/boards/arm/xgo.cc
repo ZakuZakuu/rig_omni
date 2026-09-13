@@ -476,16 +476,23 @@ bool xgo_tune_restore_factory() {
     vTaskDelay(pdMS_TO_TICKS(20));
     bool restored = true;
     for (const FactoryTuneValues& values : kFactoryTuneValues) {
+        // EEPROM writes are acknowledged asynchronously by the SCS009. Keep
+        // each register write separated; back-to-back writes can silently
+        // drop the P register while later fields appear to restore normally.
         restored = WriteServoRegisters(values.id, 0x1A, &values.cw_deadband, 1) && restored;
+        vTaskDelay(pdMS_TO_TICKS(15));
         restored = WriteServoRegisters(values.id, 0x1B, &values.ccw_deadband, 1) && restored;
+        vTaskDelay(pdMS_TO_TICKS(15));
         restored = WriteServoRegisters(values.id, 0x15, &values.p, 1) && restored;
+        vTaskDelay(pdMS_TO_TICKS(15));
         restored = WriteServoRegisters(values.id, 0x16, &values.d, 1) && restored;
+        vTaskDelay(pdMS_TO_TICKS(15));
         const uint8_t startup[2] = {
             static_cast<uint8_t>((values.startup_force >> 8) & 0xFF),
             static_cast<uint8_t>(values.startup_force & 0xFF),
         };
         restored = WriteServoRegisters(values.id, 0x18, startup, 2) && restored;
-        vTaskDelay(pdMS_TO_TICKS(10));
+        vTaskDelay(pdMS_TO_TICKS(20));
     }
     vTaskDelay(pdMS_TO_TICKS(30));
     servo_parameter_dump_active = false;

@@ -65,6 +65,13 @@ struct MotionLabCompensationProfile {
     uint8_t joint_index;
     float positive_deadband_deg;
     float negative_deadband_deg;
+    // Optional direction-specific command shaping. A zero floor and a scale
+    // of 1.0 preserve the v0.1 behavior. Floors are only applied while the
+    // trajectory is materially away from its endpoint.
+    float positive_min_velocity_deg_s;
+    float negative_min_velocity_deg_s;
+    float positive_velocity_scale;
+    float negative_velocity_scale;
 };
 
 // Start from recently observed servo positions. The caller supplies raw counts

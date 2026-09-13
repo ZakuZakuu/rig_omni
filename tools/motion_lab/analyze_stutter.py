@@ -183,6 +183,10 @@ def analyze_run(rows: list[dict[str, float]], metadata: dict) -> tuple[dict, lis
     reversal_delays_ms, backlash_deg = reversal_metrics(rows)
     metric = {
         "run": metadata["run"],
+        "candidate": metadata.get("candidate", ""),
+        "servo_profile": metadata.get("servo_profile", "factory"),
+        "runtime_profile": metadata.get("runtime_profile", "off"),
+        "repetition": int(metadata.get("repetition", 0)),
         "direction": direction,
         "amplitude_deg": amplitude,
         "duration_ms": int(metadata["duration_ms"]),

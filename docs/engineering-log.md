@@ -552,3 +552,28 @@ excitation manifest, immutable raw captures, fixed-grid derived data, separate
 reversal metrics, candidate scoring, and a persisted-but-bypassable profile.
 The pendulum/CMA-ES friction fit, external backlash fixture, input-shaper FFT,
 and unverified SCS009 physical parameters remain explicitly out of scope.
+
+## 2026-09-13 — Auto-calibration v0.2 bounded screen
+
+The v0.1 result remained factory/null, so the next step was a deliberately
+small practical screen rather than another physical-model exercise. Motion Lab
+now supports a RAM-only per-joint directional profile with independent command
+deadbands, minimum smooth velocities, and velocity scales. The profile is
+disabled outside the explicit diagnostic path and cannot be changed while a
+Motion Lab run is active.
+
+The host runner `tools/motion_lab/auto_calibrate_v2.py` compared six profiles
+using identical 10°/2 s minimum-jerk joint-0 motions, both directions, two
+repetitions. It screened CW/CCW deadband, P, startup force, and runtime
+direction compensation; D was intentionally skipped because no endpoint
+ringing was established. All valid rerun captures had fresh feedback and
+7.8–8.2 V. The telemetry ranking was E (startup=32 plus runtime compensation),
+D (P=12 plus runtime compensation), then factory A. The ranking is only a
+guardrail; the human visual comparison is still required.
+
+During the first screen, repeated restore commands exposed that a tightly
+packed EEPROM write sequence could leave joint-0 P at the prior candidate even
+when later fields restored. The restore implementation now inserts a bounded
+delay between each register write, and a write/readback test confirmed P=15,
+D=15, startup=24, and dead zones 1/1 after restoring from P=12. This is a
+reproducibility and safety fix, not a motion-quality claim.

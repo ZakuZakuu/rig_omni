@@ -29,7 +29,7 @@ struct MotionLabState {
 };
 
 MotionLabState state = {};
-MotionLabCompensationProfile compensation = {};
+MotionLabCompensationProfile compensation = {false, 0, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f};
 
 float clampf(float value, float low, float high) {
     if (value < low) return low;
@@ -45,6 +45,20 @@ float command_deadband_for(const MotionLabState& current, int joint, float next)
     if (delta > 0.0001f) return compensation.positive_deadband_deg;
     if (delta < -0.0001f) return compensation.negative_deadband_deg;
     return current.config.deadband_deg;
+}
+
+float velocity_scale_for(int joint, float velocity) {
+    if (!compensation.enabled || compensation.joint_index != joint) return 1.0f;
+    if (velocity > 0.0001f) return clampf(compensation.positive_velocity_scale, 0.7f, 1.3f);
+    if (velocity < -0.0001f) return clampf(compensation.negative_velocity_scale, 0.7f, 1.3f);
+    return 1.0f;
+}
+
+float minimum_velocity_for(int joint, float velocity) {
+    if (!compensation.enabled || compensation.joint_index != joint) return 0.0f;
+    if (velocity > 0.0001f) return clampf(compensation.positive_min_velocity_deg_s, 0.0f, 10.0f);
+    if (velocity < -0.0001f) return clampf(compensation.negative_min_velocity_deg_s, 0.0f, 10.0f);
+    return 0.0f;
 }
 
 float easing(float normalized, MotionLabTrajectory trajectory) {
@@ -207,9 +221,22 @@ void motion_lab_update(uint32_t now_us) {
             }
         }
 
-        const float velocity_target = clampf((desired - state.command_deg[i]) / dt_s,
-                                             -state.config.max_velocity_deg_s,
-                                             state.config.max_velocity_deg_s);
+        float velocity_target = (desired - state.command_deg[i]) / dt_s;
+        velocity_target *= velocity_scale_for(i, velocity_target);
+        const float minimum_velocity = minimum_velocity_for(i, velocity_target);
+        // Do not force a non-zero floor while entering/leaving a hold or near
+        // an endpoint. This is a deliberately small anti-stick-slip nudge,
+        // not an external position controller.
+        const float remaining = desired - state.command_deg[i];
+        const float excursion = fabsf(desired - state.baseline_deg[i]);
+        if (minimum_velocity > 0.0f && fabsf(velocity_target) > 0.01f &&
+            fabsf(remaining) > fmaxf(0.20f, minimum_velocity * dt_s * 2.0f) &&
+            excursion < 0.85f * fabsf(state.config.amplitude_deg)) {
+            const float sign = velocity_target > 0.0f ? 1.0f : -1.0f;
+            if (fabsf(velocity_target) < minimum_velocity) velocity_target = sign * minimum_velocity;
+        }
+        velocity_target = clampf(velocity_target, -state.config.max_velocity_deg_s,
+                                 state.config.max_velocity_deg_s);
         const float max_velocity_step = state.config.max_acceleration_deg_s2 * dt_s;
         state.command_velocity_deg_s[i] += clampf(velocity_target - state.command_velocity_deg_s[i],
                                                    -max_velocity_step, max_velocity_step);

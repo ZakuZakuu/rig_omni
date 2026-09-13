@@ -90,6 +90,7 @@ void PrintMotionLabConsoleHelp() {
            "  mlab comp off\r\n"
            "  mlab comp show\r\n"
            "  mlab comp <joint 0..4> <cw_deadband_mdeg 0..2000> <ccw_deadband_mdeg 0..2000>\r\n"
+           "  mlab comp profile <joint> <cw_db_mdeg> <ccw_db_mdeg> <cw_min_mdeg_s> <ccw_min_mdeg_s> <cw_scale_pm> <ccw_scale_pm>\r\n"
            "  mlab voltage  (read-only ID1 input voltage)\r\n"
            "  mlab status   (read-only live/error-latch snapshot)\r\n"
            "  mlab tune restore\r\n"
@@ -1191,7 +1192,7 @@ public:
                     if (motion_lab_is_active()) {
                         printf("MLAB_COMP busy; stop Motion Lab before changing profile\r\n");
                     } else {
-                        motion_lab_set_compensation({false, 0, 0.0f, 0.0f});
+                        motion_lab_set_compensation({false, 0, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f});
                         printf("MLAB_COMP disabled\r\n");
                     }
                     continue;
@@ -1199,11 +1200,49 @@ public:
                 if (strcmp(line, "mlab comp show") == 0) {
                     MotionLabCompensationProfile profile = {};
                     motion_lab_get_compensation(&profile);
-                    printf("MLAB_COMP enabled=%d,joint=%u,cw_deadband_mdeg=%d,ccw_deadband_mdeg=%d\r\n",
+                    printf("MLAB_COMP enabled=%d,joint=%u,cw_deadband_mdeg=%d,ccw_deadband_mdeg=%d,cw_min_mdeg_s=%d,ccw_min_mdeg_s=%d,cw_scale_pm=%d,ccw_scale_pm=%d\r\n",
                            profile.enabled ? 1 : 0,
                            static_cast<unsigned>(profile.joint_index),
                            static_cast<int>(profile.positive_deadband_deg * 1000.0f + 0.5f),
-                           static_cast<int>(profile.negative_deadband_deg * 1000.0f + 0.5f));
+                           static_cast<int>(profile.negative_deadband_deg * 1000.0f + 0.5f),
+                           static_cast<int>(profile.positive_min_velocity_deg_s * 1000.0f + 0.5f),
+                           static_cast<int>(profile.negative_min_velocity_deg_s * 1000.0f + 0.5f),
+                           static_cast<int>(profile.positive_velocity_scale * 1000.0f + 0.5f),
+                           static_cast<int>(profile.negative_velocity_scale * 1000.0f + 0.5f));
+                    continue;
+                }
+                int profile_joint = 0;
+                int profile_cw_mdeg = 0;
+                int profile_ccw_mdeg = 0;
+                int profile_cw_min = 0;
+                int profile_ccw_min = 0;
+                int profile_cw_scale = 1000;
+                int profile_ccw_scale = 1000;
+                if (sscanf(line, "mlab comp profile %d %d %d %d %d %d %d", &profile_joint,
+                           &profile_cw_mdeg, &profile_ccw_mdeg, &profile_cw_min, &profile_ccw_min,
+                           &profile_cw_scale, &profile_ccw_scale) == 7) {
+                    if (profile_joint < 0 || profile_joint >= MOTOR_NUM ||
+                        profile_cw_mdeg < 0 || profile_cw_mdeg > 2000 ||
+                        profile_ccw_mdeg < 0 || profile_ccw_mdeg > 2000 ||
+                        profile_cw_min < 0 || profile_cw_min > 10000 ||
+                        profile_ccw_min < 0 || profile_ccw_min > 10000 ||
+                        profile_cw_scale < 700 || profile_cw_scale > 1300 ||
+                        profile_ccw_scale < 700 || profile_ccw_scale > 1300) {
+                        printf("MLAB_COMP invalid; db=0..2000 mdeg, min=0..10000 mdeg/s, scale=700..1300 per-mille\r\n");
+                    } else if (motion_lab_is_active()) {
+                        printf("MLAB_COMP busy; stop Motion Lab before changing profile\r\n");
+                    } else {
+                        motion_lab_set_compensation({true, static_cast<uint8_t>(profile_joint),
+                                                     profile_cw_mdeg / 1000.0f,
+                                                     profile_ccw_mdeg / 1000.0f,
+                                                     profile_cw_min / 1000.0f,
+                                                     profile_ccw_min / 1000.0f,
+                                                     profile_cw_scale / 1000.0f,
+                                                     profile_ccw_scale / 1000.0f});
+                        printf("MLAB_COMP profile enabled=1,joint=%d,cw_deadband_mdeg=%d,ccw_deadband_mdeg=%d,cw_min_mdeg_s=%d,ccw_min_mdeg_s=%d,cw_scale_pm=%d,ccw_scale_pm=%d\r\n",
+                               profile_joint, profile_cw_mdeg, profile_ccw_mdeg, profile_cw_min,
+                               profile_ccw_min, profile_cw_scale, profile_ccw_scale);
+                    }
                     continue;
                 }
                 int comp_joint = 0;
@@ -1220,7 +1259,8 @@ public:
                     } else {
                         motion_lab_set_compensation({true, static_cast<uint8_t>(comp_joint),
                                                      comp_cw_mdeg / 1000.0f,
-                                                     comp_ccw_mdeg / 1000.0f});
+                                                     comp_ccw_mdeg / 1000.0f,
+                                                     0.0f, 0.0f, 1.0f, 1.0f});
                         printf("MLAB_COMP enabled=1,joint=%d,cw_deadband_mdeg=%d,ccw_deadband_mdeg=%d\r\n",
                                comp_joint, comp_cw_mdeg, comp_ccw_mdeg);
                     }
