@@ -174,11 +174,12 @@ void motion_lab_update(uint32_t now_us) {
         state.command_velocity_deg_s[i] += clampf(velocity_target - state.command_velocity_deg_s[i],
                                                    -max_velocity_step, max_velocity_step);
         const float next = state.command_deg[i] + state.command_velocity_deg_s[i] * dt_s;
+        // Keep integrating the internal trajectory on every control tick.
+        // Deadband applies only to bus writes below; resetting this value to
+        // sent_deg here would prevent sub-deadband 2 ms steps from accumulating.
+        state.command_deg[i] = next;
         if (fabsf(next - state.sent_deg[i]) >= state.config.deadband_deg) {
-            state.command_deg[i] = next;
             changed = true;
-        } else {
-            state.command_deg[i] = state.sent_deg[i];
         }
     }
     state.command_dirty = state.command_dirty || changed;

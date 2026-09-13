@@ -35,6 +35,17 @@ class TrajectoryTest(unittest.TestCase):
         self.assertLess(minimum_jerk(epsilon) / epsilon, 0.001)
         self.assertLess((1.0 - minimum_jerk(1.0 - epsilon)) / epsilon, 0.001)
 
+    def test_deadband_does_not_discard_sub_tick_progress(self) -> None:
+        # The 2 ms controller takes sub-deadband steps. It must retain those
+        # internally and only suppress the corresponding bus writes.
+        filtered_deg = 0.0
+        sent_deg = 0.0
+        for _ in range(100):
+            filtered_deg += 45.0 * 0.002
+            if abs(filtered_deg - sent_deg) >= 0.250:
+                sent_deg = filtered_deg
+        self.assertGreater(sent_deg, 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()
