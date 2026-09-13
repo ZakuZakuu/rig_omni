@@ -162,6 +162,8 @@ void InitZeroPos(){
     for(int i=0;i<MOTOR_NUM;i++){
         motor[i].ID = i+1;
         motor[i].Load = 0;
+		motor[i].FbTimestampMs = 0;
+		motor[i].FbSequence = 0;
     }
     if(res){
         // 已标定，启用舵机
@@ -276,6 +278,19 @@ void ReadServoVoltage(uint8_t readID){
     SendMotorCommand(bBuf, 8);
 }
 
+static void ReadServoRegisters(uint8_t read_id, uint8_t address, uint8_t length) {
+    uint8_t packet[8];
+    packet[0] = 0xFF;
+    packet[1] = 0xFF;
+    packet[2] = read_id;
+    packet[3] = 0x04;
+    packet[4] = 0x02;
+    packet[5] = address;
+    packet[6] = length;
+    packet[7] = static_cast<uint8_t>(~(read_id + 0x04 + 0x02 + address + length));
+    SendMotorCommand(packet, sizeof(packet));
+}
+
 void EnableMotor(uint8_t ID, uint8_t mode){
 	uint8_t bBuf[8];
     uint8_t CheckSum = 0;
@@ -308,6 +323,102 @@ uint8_t rxLen = 0;
 uint8_t rxDataLen = 0;
 uint8_t id = 0;
 uint8_t rxBuffer[30] = {0};
+
+struct ServoParameterCapture {
+    volatile bool pending = false;
+    volatile bool complete = false;
+    uint8_t expected_id = 0;
+    uint8_t expected_length = 0;
+    uint8_t data[24] = {0};
+};
+
+static ServoParameterCapture servo_parameter_capture;
+static volatile bool servo_parameter_dump_active = false;
+
+struct ServoParameterSpec {
+    const char* name;
+    uint8_t address;
+    uint8_t length;
+};
+
+// SCS-series EPROM/control entries. Values are emitted as raw bytes so a
+// future model-specific decoder cannot silently reinterpret a factory value.
+static const ServoParameterSpec kSCS009FactoryParameters[] = {
+    {"firmware_major", 0, 1},
+    {"firmware_minor", 1, 1},
+    {"model_number", 3, 2},
+    {"id", 5, 1},
+    {"baud_rate", 6, 1},
+    {"return_delay", 7, 1},
+    {"response_status", 8, 1},
+    {"min_position_limit", 9, 2},
+    {"max_position_limit", 11, 2},
+    {"max_temperature_limit", 13, 1},
+    {"max_voltage_limit", 14, 1},
+    {"min_voltage_limit", 15, 1},
+    {"max_torque_limit", 16, 2},
+    {"phase", 18, 1},
+    {"unloading_condition", 19, 1},
+    {"led_alarm_condition", 20, 1},
+    {"p_coefficient", 21, 1},
+    {"d_coefficient", 22, 1},
+    {"i_coefficient", 23, 1},
+    {"minimum_startup_force", 24, 2},
+    {"cw_dead_zone", 26, 1},
+    {"ccw_dead_zone", 27, 1},
+    {"protective_torque", 37, 1},
+    {"protection_time", 38, 1},
+};
+
+static bool ReadServoParameter(uint8_t read_id, const ServoParameterSpec& spec) {
+    if (spec.length > sizeof(servo_parameter_capture.data)) {
+        return false;
+    }
+    servo_parameter_capture.expected_id = read_id;
+    servo_parameter_capture.expected_length = spec.length;
+    servo_parameter_capture.complete = false;
+    servo_parameter_capture.pending = true;
+    ReadServoRegisters(read_id, spec.address, spec.length);
+
+    const TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(100);
+    while (!servo_parameter_capture.complete &&
+           static_cast<int32_t>(xTaskGetTickCount() - deadline) < 0) {
+        vTaskDelay(pdMS_TO_TICKS(2));
+    }
+    servo_parameter_capture.pending = false;
+    return servo_parameter_capture.complete;
+}
+
+void xgo_dump_factory_parameters() {
+    if (motion_lab_is_active() || teach_state != TEACH_IDLE) {
+        printf("SCS009_PARAM dump: refused while motion/teach is active\r\n");
+        return;
+    }
+
+    servo_parameter_dump_active = true;
+    vTaskDelay(pdMS_TO_TICKS(20));
+    printf("SCS009_PARAM dump: read-only; no EEPROM unlock/write performed\r\n");
+    printf("SCS009_PARAM,id,name,address,length,raw_hex,ts_ms\r\n");
+    for (uint8_t read_id = 1; read_id <= MOTOR_NUM; ++read_id) {
+        for (const ServoParameterSpec& spec : kSCS009FactoryParameters) {
+            const bool received = ReadServoParameter(read_id, spec);
+            printf("SCS009_PARAM,%u,%s,0x%02X,%u,",
+                   read_id, spec.name, spec.address, spec.length);
+            if (received) {
+                for (uint8_t i = 0; i < spec.length; ++i) {
+                    printf("%02X", servo_parameter_capture.data[i]);
+                }
+                printf(",%lu\r\n",
+                       static_cast<unsigned long>(esp_timer_get_time() / 1000));
+            } else {
+                printf("TIMEOUT,\r\n");
+            }
+        }
+    }
+    servo_parameter_dump_active = false;
+    printf("SCS009_PARAM dump: complete\r\n");
+}
+
 void xgo_rx(){
     uint8_t tempBuf[1];
     uint8_t res = 0; 
@@ -340,7 +451,7 @@ void xgo_rx(){
                     rxFlag = 3;
                     break;
             case 3:
-                if(res == 0x08||res == 0x0B||res == 0x03)
+                if(res >= 0x03 && res <= 0x1A)
                     {					
                         rxFlag = 4; 
                         rxBuffer[3] = res;
@@ -361,32 +472,40 @@ void xgo_rx(){
                     }
                     checkSum = ~checkSum;
                     if(checkSum == rxBuffer[3+rxDataLen]){
-                        if (rxDataLen == 3) {
+                        const uint8_t packet_id = rxBuffer[2];
+                        const uint8_t packet_data_length = rxDataLen - 2;
+                        if (servo_parameter_capture.pending &&
+                            packet_id == servo_parameter_capture.expected_id &&
+                            packet_data_length == servo_parameter_capture.expected_length) {
+                            memcpy(servo_parameter_capture.data, &rxBuffer[5], packet_data_length);
+                            servo_parameter_capture.complete = true;
+                            servo_parameter_capture.pending = false;
+                        } else if (rxDataLen == 3) {
                             // PRESENT_VOLTAGE 响应: 1 字节电压值 (0.1V 精度)
                             // for(int i=0;i<rxDataLen+3;i++){
                             //     printf("%02X ", rxBuffer[i]);
                             // }
                             // printf("\r\n");
                             servo_voltage = rxBuffer[5] * 0.1f;
-                        } else {          
+                        } else if (rxDataLen == 0x08 || rxDataLen == 0x0B) {
                         POS_LOW_Byte =  rxBuffer[rxDataLen - 3];
                         POS_HIGH_Byte =  rxBuffer[rxDataLen - 2];
                         VEL_LOW_Byte =  rxBuffer[rxDataLen - 1];
                         VEL_HIGH_Byte =  rxBuffer[rxDataLen];
                         TOR_LOW_Byte =  rxBuffer[rxDataLen + 1];
                         TOR_HIGH_Byte =  rxBuffer[rxDataLen + 2];
-                        if(id>0&&id<=MOTOR_NUM){
-                            id = id - 1;
-                            motor[id].FbPos = POS_HIGH_Byte | (POS_LOW_Byte << 8);
-                            motor[id].FbSpd = VEL_HIGH_Byte | (VEL_LOW_Byte << 8);
-                            motor[id].FbTor = TOR_HIGH_Byte | (TOR_LOW_Byte << 8);
+                        if(packet_id>0&&packet_id<=MOTOR_NUM){
+                            const uint8_t motor_index = packet_id - 1;
+                            motor[motor_index].FbPos = POS_HIGH_Byte | (POS_LOW_Byte << 8);
+                            motor[motor_index].FbSpd = VEL_HIGH_Byte | (VEL_LOW_Byte << 8);
+                            motor[motor_index].FbTor = TOR_HIGH_Byte | (TOR_LOW_Byte << 8);
+                            motor[motor_index].FbTimestampMs =
+                                static_cast<uint32_t>(esp_timer_get_time() / 1000);
+                            motor[motor_index].FbSequence++;
                             // printf("motor[%d].FbPos: %d \r\n", id, motor[id].FbPos);
-                            id = id + 1;
-                            
-                            
                             // 检测堵转（示教模式中跳过：扭矩已关，反馈滞后是正常的）
                             if (teach_state != TEACH_RECORDING) {
-                                CheckMotorStall(id);
+                                CheckMotorStall(packet_id);
                             }
                         }
                         
@@ -402,6 +521,17 @@ void xgo_rx(){
         }		
     }       // end while
 }           // end xgo_rx
+
+void xgo_feedback_poll() {
+    static uint8_t poll_id = 1;
+    if (servo_parameter_dump_active) {
+        return;
+    }
+    ReadMotorState(poll_id);
+    if (++poll_id > MOTOR_NUM) {
+        poll_id = 1;
+    }
+}
 
 void detect_triple_click() {
     static int click_count = 0;           
@@ -638,11 +768,14 @@ void xgo_control() {
     if(init_flag == 0){
         return;
     }
-    static uint32_t counter = 0;
+    if (servo_parameter_dump_active) {
+        // The read-only parameter snapshot temporarily owns the half-duplex
+        // bus. Holding the last target avoids interleaving command packets.
+        vTaskDelay(pdMS_TO_TICKS(1));
+        return;
+    }
     static uint32_t counter2 = 0;
-    static uint8_t read_id = 1;
 
-    counter++;
     counter2++;
 
     // Motion Lab has exclusive ownership of direct joint commands. It is a
@@ -675,11 +808,6 @@ void xgo_control() {
             ESP_LOGI(TAG, "Motion Lab released direct joint control");
         }
 
-        if (counter % 50 == 0) {
-            ReadMotorState(read_id);
-            counter = 0;
-            if (++read_id > MOTOR_NUM) read_id = 1;
-        }
         return;
     }
 
@@ -704,22 +832,11 @@ void xgo_control() {
                 teach_read_servo_id = 1;
                 teach_state = TEACH_RECORDING;
             }
-            // 正常轮询反馈
-            if (counter % 50 == 0) {
-                ReadMotorState(read_id);
-                counter = 0;
-                if (++read_id > MOTOR_NUM) read_id = 1;
-            }
             return;
         }
 
         // --- RECORDING: 扭矩已关，快速轮询 + 100ms 存帧，最长 15s ---
         if (teach_state == TEACH_RECORDING) {
-            ReadMotorState(teach_read_servo_id);
-            if (++teach_read_servo_id > MOTOR_NUM) {
-                teach_read_servo_id = 1;
-            }
-
             if (++teach_sample_counter >= TEACH_SAMPLE_CYCLES
                 && teach_frame_count < TEACH_MAX_FRAMES) {
                 teach_sample_counter = 0;
@@ -757,11 +874,6 @@ void xgo_control() {
                 ESP_LOGI(TAG, "Teach: back to stand, recording ready=%d, frames=%lu",
                          teach_has_recording, teach_frame_count);
             }
-            if (counter % 50 == 0) {
-                ReadMotorState(read_id);
-                counter = 0;
-                if (++read_id > MOTOR_NUM) read_id = 1;
-            }
             return;
         }
 
@@ -773,11 +885,6 @@ void xgo_control() {
                 pos[i] = motor[i].DesPos;
             }
             SetMotorPos(pos, motor_speed);
-            if (counter % 50 == 0) {
-                ReadMotorState(read_id);
-                counter = 0;
-                if (++read_id > MOTOR_NUM) read_id = 1;
-            }
             return;
         }
     }
@@ -810,19 +917,11 @@ void xgo_control() {
         detect_triple_click();
     }
 
-    if(counter%50 == 0){
-        ReadMotorState(read_id);
-        counter = 0;
-        read_id++;
-        if(read_id > MOTOR_NUM){
-            read_id = 1;
-        }
-
-        // 每分钟读一次电池电压（1200 个周期 × 50ms = 60s）
-        static int voltage_counter_puppy = 0;
-        if (++voltage_counter_puppy % 1200 == 0) {
-            ReadServoVoltage(1);
-        }
+    // State polling is handled by xgo_feedback_poll(), outside this 2 ms path.
+    // Keep the slow voltage read here; it is independent of joint freshness.
+    static uint32_t voltage_counter_puppy = 0;
+    if (++voltage_counter_puppy % 20000 == 0) {
+        ReadServoVoltage(1);
     }
 }
 

@@ -84,6 +84,7 @@ void PrintMotionLabConsoleHelp() {
            "  mlab run <experiment 0..2 or 4> <trajectory 0..2> <joint 0..4> <amplitude_deg 1..10> "
            "<duration_ms 500..30000> <stagger_ms 0..2000> <max_velocity_deg_s 1..90> "
            "<max_acceleration_deg_s2 1..500> <deadband_mdeg 0..2000>\r\n"
+           "  mlab params  (read-only SCS009 factory/control snapshot)\r\n"
            "  mlab stop\r\n"
            "  mlab help\r\n");
 }
@@ -114,6 +115,7 @@ private:
     Esp32Camera* camera_ = nullptr;  // 初始化为nullptr
     TaskHandle_t xgo_task_handle_ = nullptr;
     TaskHandle_t xgo_rx_task_handle_ = nullptr;
+    TaskHandle_t xgo_feedback_poll_task_handle_ = nullptr;
     int64_t button_press_start_time_ = 0;  // boot按键按下时间戳
     esp_timer_handle_t long_press_timer_ = nullptr;  // boot按键长按检测定时器
     bool nvs_reset_emotion_shown_ = false;  // boot按键是否已显示 nvs_reset 表情
@@ -1014,6 +1016,18 @@ public:
             vTaskDelete(NULL);
         }, "xgo_rx_task", 4096, this, 5, &xgo_rx_task_handle_, 1);
 
+        // Keep servo status requests out of the 2 ms control task. One ID is
+        // queried every 20 ms, giving each of the five joints a fresh sample
+        // at about 10 Hz while preserving UART/bus margin.
+        xTaskCreatePinnedToCore([](void* arg) {
+            (void)arg;
+            while (true) {
+                xgo_feedback_poll();
+                vTaskDelay(pdMS_TO_TICKS(20));
+            }
+            vTaskDelete(NULL);
+        }, "xgo_feedback_poll", 3072, this, 4, &xgo_feedback_poll_task_handle_, 1);
+
         // Telemetry is deliberately independent of the 2 ms control task.
         // Values are raw servo feedback: load is an effort proxy, not force.
         xTaskCreatePinnedToCore([](void* arg) {
@@ -1022,20 +1036,25 @@ public:
             while (true) {
                 MotionLabStatus status = {};
                 const uint32_t now_us = static_cast<uint32_t>(esp_timer_get_time());
+                const uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
                 motion_lab_get_status(&status, now_us);
                 if (status.active) {
                     short command_pos[MOTOR_NUM];
+                    uint32_t feedback_age_ms[MOTOR_NUM];
                     for (int i = 0; i < MOTOR_NUM; ++i) {
                         command_pos[i] = static_cast<short>(motor[i].ZeroPos +
                             status.command_deg[i] / M_A * M_N);
+                        feedback_age_ms[i] = motor[i].FbTimestampMs == 0
+                            ? UINT32_MAX : now_ms - motor[i].FbTimestampMs;
                     }
                     if (!header_emitted) {
-                        printf("MLAB,ts_ms,experiment,trajectory,elapsed_ms,total_ms,cmd_deg[5],cmd_pos[5],fb_pos[5],fb_speed_raw[5],fb_load_raw[5]\\r\\n");
+                        printf("MLAB,ts_ms,experiment,trajectory,elapsed_ms,total_ms,cmd_deg[5],cmd_pos[5],fb_pos[5],fb_speed_raw[5],fb_load_raw[5],fb_ts_ms[5],fb_age_ms[5]\\r\\n");
                         header_emitted = true;
                     }
                     printf("MLAB,%lu,%d,%d,%lu,%lu,%.3f|%.3f|%.3f|%.3f|%.3f,"
-                           "%d|%d|%d|%d|%d,%d|%d|%d|%d|%d,%.0f|%.0f|%.0f|%.0f|%.0f,%d|%d|%d|%d|%d\\r\\n",
-                           static_cast<unsigned long>(now_us / 1000), status.experiment, status.trajectory,
+                           "%d|%d|%d|%d|%d,%d|%d|%d|%d|%d,%.0f|%.0f|%.0f|%.0f|%.0f,"
+                           "%d|%d|%d|%d|%d,%lu|%lu|%lu|%lu|%lu,%lu|%lu|%lu|%lu|%lu\\r\\n",
+                           static_cast<unsigned long>(now_ms), status.experiment, status.trajectory,
                            static_cast<unsigned long>(status.elapsed_ms),
                            static_cast<unsigned long>(status.total_duration_ms),
                            status.command_deg[0], status.command_deg[1], status.command_deg[2],
@@ -1043,7 +1062,17 @@ public:
                            command_pos[0], command_pos[1], command_pos[2], command_pos[3], command_pos[4],
                            motor[0].FbPos, motor[1].FbPos, motor[2].FbPos, motor[3].FbPos, motor[4].FbPos,
                            motor[0].FbSpd, motor[1].FbSpd, motor[2].FbSpd, motor[3].FbSpd, motor[4].FbSpd,
-                           motor[0].FbTor, motor[1].FbTor, motor[2].FbTor, motor[3].FbTor, motor[4].FbTor);
+                           motor[0].FbTor, motor[1].FbTor, motor[2].FbTor, motor[3].FbTor, motor[4].FbTor,
+                           static_cast<unsigned long>(motor[0].FbTimestampMs),
+                           static_cast<unsigned long>(motor[1].FbTimestampMs),
+                           static_cast<unsigned long>(motor[2].FbTimestampMs),
+                           static_cast<unsigned long>(motor[3].FbTimestampMs),
+                           static_cast<unsigned long>(motor[4].FbTimestampMs),
+                           static_cast<unsigned long>(feedback_age_ms[0]),
+                           static_cast<unsigned long>(feedback_age_ms[1]),
+                           static_cast<unsigned long>(feedback_age_ms[2]),
+                           static_cast<unsigned long>(feedback_age_ms[3]),
+                           static_cast<unsigned long>(feedback_age_ms[4]));
                 } else {
                     header_emitted = false;
                 }
@@ -1116,6 +1145,10 @@ public:
                     } else {
                         printf("MLAB_CONSOLE no active experiment\r\n");
                     }
+                    continue;
+                }
+                if (strcmp(line, "mlab params") == 0) {
+                    xgo_dump_factory_parameters();
                     continue;
                 }
 

@@ -21,9 +21,11 @@ typedef struct
     short DesPos;
     float DesSpd;
 	short DesTor;
-    short FbPos;
+	short FbPos;
     float FbSpd;
     short FbTor;
+	uint32_t FbTimestampMs;
+	uint32_t FbSequence;
 	short ZeroPos;
 	uint8_t Load;
 } Motor;
@@ -72,6 +74,9 @@ void SendMotorCommand(uint8_t *pData, uint16_t size);
 
 void xgo_control();
 void xgo_rx();
+void xgo_feedback_poll();
+// Read-only SCS009 factory/control-table snapshot, printed to UART0.
+void xgo_dump_factory_parameters();
 //Action & Behavior Functions
 void set_action_loop_flag(uint8_t flag);
 
