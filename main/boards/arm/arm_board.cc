@@ -91,6 +91,8 @@ void PrintMotionLabConsoleHelp() {
            "  mlab status   (read-only live/error-latch snapshot)\r\n"
            "  mlab tune restore\r\n"
            "  mlab tune deadband <raw 0..8>\r\n"
+           "  mlab tune cw_deadband <raw 0..8>\r\n"
+           "  mlab tune ccw_deadband <raw 0..8>\r\n"
            "  mlab tune p <raw 0..63>\r\n"
            "  mlab tune d <raw 0..63>\r\n"
            "  mlab tune startup <raw 0..128>\r\n"
@@ -1209,6 +1211,10 @@ public:
                     XgoTuneParameter parameter;
                     if (strcmp(tune_name, "deadband") == 0) {
                         parameter = XGO_TUNE_DEADBAND;
+                    } else if (strcmp(tune_name, "cw_deadband") == 0) {
+                        parameter = XGO_TUNE_CW_DEADBAND;
+                    } else if (strcmp(tune_name, "ccw_deadband") == 0) {
+                        parameter = XGO_TUNE_CCW_DEADBAND;
                     } else if (strcmp(tune_name, "p") == 0) {
                         parameter = XGO_TUNE_P;
                     } else if (strcmp(tune_name, "d") == 0) {
@@ -1216,7 +1222,7 @@ public:
                     } else if (strcmp(tune_name, "startup") == 0) {
                         parameter = XGO_TUNE_STARTUP_FORCE;
                     } else {
-                        printf("MLAB_TUNE unknown group; use deadband, p, d, startup\r\n");
+                        printf("MLAB_TUNE unknown group; use deadband, cw_deadband, ccw_deadband, p, d, startup\r\n");
                         continue;
                     }
                     const bool applied = tune_value >= 0 &&

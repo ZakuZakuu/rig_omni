@@ -90,6 +90,8 @@ void xgo_dump_factory_parameters();
 void xgo_print_servo_status();
 enum XgoTuneParameter {
     XGO_TUNE_DEADBAND = 0,
+    XGO_TUNE_CW_DEADBAND,
+    XGO_TUNE_CCW_DEADBAND,
     XGO_TUNE_P,
     XGO_TUNE_D,
     XGO_TUNE_STARTUP_FORCE,

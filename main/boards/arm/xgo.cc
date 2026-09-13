@@ -343,6 +343,10 @@ static bool WriteTuneValue(uint8_t id, XgoTuneParameter parameter, uint16_t raw_
         case XGO_TUNE_DEADBAND:
             return WriteServoRegisters(id, 0x1A, &byte_value, 1) &&
                    WriteServoRegisters(id, 0x1B, &byte_value, 1);
+        case XGO_TUNE_CW_DEADBAND:
+            return WriteServoRegisters(id, 0x1A, &byte_value, 1);
+        case XGO_TUNE_CCW_DEADBAND:
+            return WriteServoRegisters(id, 0x1B, &byte_value, 1);
         case XGO_TUNE_P:
             return WriteServoRegisters(id, 0x15, &byte_value, 1);
         case XGO_TUNE_D:
@@ -449,7 +453,7 @@ bool xgo_tune_apply(XgoTuneParameter parameter, uint16_t raw_value) {
         parameter < XGO_TUNE_DEADBAND || parameter > XGO_TUNE_STARTUP_FORCE) {
         return false;
     }
-    if ((parameter == XGO_TUNE_DEADBAND && raw_value > 8) ||
+    if ((parameter >= XGO_TUNE_DEADBAND && parameter <= XGO_TUNE_CCW_DEADBAND && raw_value > 8) ||
         ((parameter == XGO_TUNE_P || parameter == XGO_TUNE_D) && raw_value > 63) ||
         (parameter == XGO_TUNE_STARTUP_FORCE && raw_value > 128)) {
         return false;

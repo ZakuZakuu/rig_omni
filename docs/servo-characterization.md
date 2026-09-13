@@ -162,6 +162,13 @@ profile is factory startup=24 with factory P/D/I and dead zones. Startup-force
 tuning is considered inconclusive/negative for this joint and is paused rather
 than being escalated.
 
+The directional asymmetry now makes separate deadband investigation the next
+meaningful parameter group. The console exposes `mlab tune cw_deadband <raw>`
+and `mlab tune ccw_deadband <raw>` so one SCS009 register can be changed at a
+time; the legacy `mlab tune deadband` command remains a paired write for
+backward compatibility. Begin from factory `1/1`, use at most two conservative
+CW candidates, and restore/read back the pair before any other parameter group.
+
 The follow-up direction comparison used the factory baseline and three repeated
 `+10°` and three repeated `−10°` minimum-jerk sweeps at 2.8 s with identical
 velocity/acceleration limits. The raw captures are under

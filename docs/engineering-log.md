@@ -474,3 +474,16 @@ command ranges and roughly 10° excursions; voltage stayed at 7.9–8.0 V and
 decisive result: if one physical sign is consistently worse, investigate
 direction-dependent friction/backlash or CW/CCW servo behavior; if both signs show
 the same outbound/return asymmetry, return to trajectory/start-state effects.
+
+The aggregate telemetry does not contradict the visual result, but it is too
+coarse to select a parameter automatically: the three `+` runs had median
+absolute root tracking error 4–5 counts and median load 54–84 raw, while the
+three `−` runs had 5–6 counts and 69–99 raw. Sampled feedback plateaus were
+common in both directions, with maximum single-sample steps of 10–14 counts (+)
+and 13–16 counts (−). The repeatable physical-direction asymmetry is therefore
+treated as an actuator/mechanical effect, not as a trajectory-duration issue.
+
+The next firmware revision adds separate `cw_deadband` and `ccw_deadband`
+commands. This preserves the factory pair (`0x01/0x01`) and makes it possible to
+change only the direction-specific register before comparing the same physical
+direction again. No P, D, or startup-force value is changed by this revision.
