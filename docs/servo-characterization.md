@@ -96,7 +96,7 @@ least three out-and-back repetitions:
 
 | Factor | Initial levels | Hold constant |
 | --- | --- | --- |
-| trajectory duration | 1.5 s, 3 s, 6 s | amplitude, joint, posture |
+| trajectory duration | 2.8 s, 3 s, 6 s | amplitude, joint, posture |
 | safe posture/load | unloaded reference, light supported load, normal working load | duration, amplitude |
 | direction | positive and negative | all above |
 
@@ -127,13 +127,16 @@ the SCS009 scale is independently verified.
 
 ## Current baseline result
 
-Three repetitions at each 1.5 s, 3 s, and 6 s duration produced root-joint
-feedback excursions with roughly 5–6% coefficient of variation and no stale
-rows. A safe posture/load comparison was skipped because no explicit verified
-compact/extended pose command exists yet. The ID-1 voltage check measured 8.00 V
-at idle and 8.00–8.10 V during motion; all rows reported `speed_cmd_raw=350`.
-These observations support continuing with factory settings and do not justify
-PID or EEPROM tuning by themselves.
+The earlier 1.5 s captures are retained as historical data, but are not directly
+comparable: with `max_velocity=15` and `max_acceleration=30`, the acceleration
+limiter allowed the internal command to reach about 13.2° before returning. The
+strict comparison matrix therefore replaces 1.5 s with 2.8 s. A protocol capture
+at 2.8 s reached `-4.984..5.019°` (10.003° excursion), confirming the endpoint
+is now comparable with the 3 s and 6 s conditions. A safe posture/load comparison
+was skipped because no explicit verified compact/extended pose command exists yet.
+The ID-1 voltage check measured 8.00 V at idle and 8.00–8.10 V during motion;
+all rows reported `speed_cmd_raw=350`. These observations support continuing with
+factory settings and do not justify PID or EEPROM tuning by themselves.
 
 The voltage-enabled rerun on commit `3d276c2` repeated each duration three times
 and preserved `speed_cmd_raw=350` in all 9 captures. Voltage stayed within

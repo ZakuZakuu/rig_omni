@@ -370,3 +370,46 @@ context without changing the factory control values. The root-joint feedback
 excursions remain repeatable enough for baseline comparison, but the different
 starting poses mean their absolute encoder ranges should not be compared as a
 load estimate.
+
+## 2026-09-13 — Human-in-the-loop startup-force A/B/C trial
+
+Because the stationary hold did not show sustained hunting and the working visual
+symptom is low-speed dwell-then-jump, the first meaningful tuning group was
+startup force. Only joint 0 was changed; P, D, I, and both dead zones remained at
+factory values. Each candidate used the identical visible sequence:
+`mlab run 0 2 0 10 2800 0 15 30 0` (minimum-jerk, 10° excursion, 2.8 s,
+out-and-back).
+
+| label | ID1 startup force | capture |
+| --- | ---: | --- |
+| A | `0x0018` (24, factory) | `backups/motion-lab-2026-09-13-voltage/startup_A_factory.log` |
+| B | `0x0020` (32) | `backups/motion-lab-2026-09-13-voltage/startup_B_32.log` |
+| C | `0x0028` (40) | `backups/motion-lab-2026-09-13-voltage/startup_C_40.log` |
+
+The three logs are preserved with SHA-256 hashes in the experiment directory.
+The post-C readback confirmed ID1 startup=`0x0028`, P=`0x0F`, D=`0x0F`, I=`0x00`,
+and dead zones `0x01/0x01`; no other control group was changed. The robot is
+currently left at C pending the human visual choice. Do not apply another group
+until A, B, or C is selected by perceived smoothness; telemetry is retained for
+diagnosis but is not the selector.
+
+## 2026-09-13 — Comparable endpoint protocol and hold classification
+
+The original 1.5 s condition is excluded from speed comparisons. With the fixed
+`max_velocity=15` and `max_acceleration=30` limits, its acceleration-limited
+internal command reached about 13.2° instead of the requested 10°. A 2.8 s
+minimum-jerk replacement was tested with the same limits and produced a command
+range of `-4.984..5.019°`, i.e. a 10.003° excursion. The strict duration matrix
+is now 2.8 s, 3 s, and 6 s; all three use the same 10° amplitude and limiter
+settings.
+
+The fresh 10-second stationary `mlab hold` run does not show persistent static
+hunting after warm-up. Joint 0 stayed at 500–501 counts for almost the entire
+hold (a one-count quantization/jitter band); the initial 488→500 transition is
+the command handoff from the previous experiment. There was no repeated large
+correction while holding. The current dominant symptom is therefore not static
+hunting; based on the prior visible motion reports and the discrete low-speed
+feedback steps, the working category is in-motion dwell-then-jump / stick-slip.
+Endpoint ringing is not established by the hold test and will be judged during
+the visible A/B/C motion sequence. No automatic telemetry-based winner will be
+selected.
