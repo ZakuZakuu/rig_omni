@@ -295,3 +295,58 @@ Conclusion: unloaded duration changes are mechanically safe and observable, but
 they do not yet separate low-speed stick-slip from posture/load or system-level
 transport effects. A controlled safe-load/posture comparison is still required
 before touching internal P/D/dead-zone/startup-force parameters.
+
+## 2026-09-13 — Repeatability, parameter readback, and supply-voltage check
+
+The duration baseline was repeated three times per condition before actuator
+tuning. Every run used joint 0, a 10-degree minimum-jerk command, zero command
+deadband, `max_velocity=15`, `max_acceleration=30`, and the current 40 Hz sync
+write cadence. The table reports root-joint feedback excursion in raw counts;
+the coefficient of variation across repetitions was approximately 5–6%.
+
+| duration | feedback excursion, repetitions (counts) | max joint-0 age (ms) | stale rows |
+| ---: | --- | ---: | ---: |
+| 1.5 s | 46, 43, 41 | 144, 145, 166 | 0, 0, 0 |
+| 3 s | 36, 36, 40 | 194, 302, 170 | 0, 0, 0 |
+| 6 s | 41, 39, 37 | 229, 166, 172 | 0, 0, 0 |
+
+The optional compact-versus-extended posture comparison was not run: the current
+Motion Lab console has no explicit, verified safe static-pose command, so guessing
+an IK pose would add avoidable mechanical risk. This is recorded as a skipped
+factor rather than treating the unloaded sweep as a load result.
+
+### Persistent speed/time audit
+
+The Motion Lab path still calls the existing `SetMotorAngle(command_deg,
+motor_speed)` function. `SetMotorPos` sends the upstream runtime sync-write at
+address `0x2A`; its velocity field is the existing in-RAM `motor_speed` value.
+The Motion Lab telemetry now records `speed_cmd_raw`, which was `350` in the
+3-second capture. No Motion Lab path sends a persistent speed/time register or a
+servo EEPROM write. A source comparison against the upstream baseline confirms
+that the runtime command packet and default `motor_speed=350` are unchanged.
+
+The fresh read-only parameter dump after the restore check returned the same
+control values as the pre-test baseline for all five servos: P=`0x0F`, D=`0x0F`,
+I=`0x00`, startup force=`0x0018`, dead zones `0x01/0x01` (ID 1–4) and
+`0x04/0x04` (ID 5), baud=`0x01`, and return delay=`0x00`. The complete post-check
+capture is kept locally at
+`backups/scs009-factory-params-2026-09-13-post-restore.log` with SHA-256
+`db11fe3d25a12012abdae0f4d7237bedbf6044b24d0a2ec3e036770faf268045`.
+
+### Servo voltage telemetry
+
+SCS009 present-voltage feedback is now sampled read-only from ID 1 at most once
+per second when the bus is otherwise free. It is included in every Motion Lab
+row as `servo_voltage_v`; `mlab voltage` provides an explicit idle reading. The
+observed idle value was `8.00 V`. During the 3-second minimum-jerk run it stayed
+at `8.00 V` initially and rose only to `8.10 V` in later samples, with no motion
+correlation or brownout signature. This is servo-reported bus voltage, not a
+direct oscilloscope measurement of transient current or rail droop, so it does
+not eliminate very short supply disturbances; it does rule out a persistent
+low-voltage or speed-setting explanation for the observed slowdown.
+
+The reversible tuning command path is present for the next phase, but no new
+deadband, P, D, or startup-force value has been applied. The one restore command
+used for this check wrote the captured factory values back and the subsequent
+read-only dump verified that there was no net parameter change. I remains
+untouched. Continue characterization with the factory values before any tuning.

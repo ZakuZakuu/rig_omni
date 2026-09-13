@@ -87,6 +87,12 @@ void PrintMotionLabConsoleHelp() {
            "  mlab poll <joint 0..4> <period_ms 5..100>  (selected-joint high-rate feedback)\r\n"
            "  mlab poll off\r\n"
            "  mlab poll stats\r\n"
+           "  mlab voltage  (read-only ID1 input voltage)\r\n"
+           "  mlab tune restore\r\n"
+           "  mlab tune deadband <raw 0..8>\r\n"
+           "  mlab tune p <raw 0..63>\r\n"
+           "  mlab tune d <raw 0..63>\r\n"
+           "  mlab tune startup <raw 0..128>\r\n"
            "  mlab params  (read-only SCS009 factory/control snapshot)\r\n"
            "  mlab stop\r\n"
            "  mlab help\r\n");
@@ -1064,12 +1070,12 @@ public:
                         }
                     }
                     if (!header_emitted) {
-                        printf("MLAB,ts_ms,experiment,trajectory,elapsed_ms,total_ms,cmd_deg[5],cmd_pos[5],fb_pos[5],fb_speed_raw[5],fb_load_raw[5],fb_ts_ms[5],fb_age_ms[5],fb_stale[5]\r\n");
+                        printf("MLAB,ts_ms,experiment,trajectory,elapsed_ms,total_ms,cmd_deg[5],cmd_pos[5],fb_pos[5],fb_speed_raw[5],fb_load_raw[5],fb_ts_ms[5],fb_age_ms[5],fb_stale[5],servo_voltage_v,speed_cmd_raw\r\n");
                         header_emitted = true;
                     }
                     printf("MLAB,%lu,%d,%d,%lu,%lu,%.3f|%.3f|%.3f|%.3f|%.3f,"
                            "%d|%d|%d|%d|%d,%d|%d|%d|%d|%d,%.0f|%.0f|%.0f|%.0f|%.0f,"
-                           "%d|%d|%d|%d|%d,%lu|%lu|%lu|%lu|%lu,%lu|%lu|%lu|%lu|%lu,%d|%d|%d|%d|%d\r\n",
+                           "%d|%d|%d|%d|%d,%lu|%lu|%lu|%lu|%lu,%lu|%lu|%lu|%lu|%lu,%d|%d|%d|%d|%d,%.2f,%u\r\n",
                            static_cast<unsigned long>(now_ms), status.experiment, status.trajectory,
                            static_cast<unsigned long>(status.elapsed_ms),
                            static_cast<unsigned long>(status.total_duration_ms),
@@ -1091,7 +1097,7 @@ public:
                            static_cast<unsigned long>(feedback_age_ms[4]),
                            motor[0].FbStale ? 1 : 0, motor[1].FbStale ? 1 : 0,
                            motor[2].FbStale ? 1 : 0, motor[3].FbStale ? 1 : 0,
-                           motor[4].FbStale ? 1 : 0);
+                           motor[4].FbStale ? 1 : 0, servo_voltage, motor_speed);
                 } else {
                     header_emitted = false;
                 }
@@ -1173,6 +1179,45 @@ public:
                 }
                 if (strcmp(line, "mlab poll stats") == 0) {
                     xgo_feedback_poll_print_stats();
+                    continue;
+                }
+                if (strcmp(line, "mlab voltage") == 0) {
+                    bool sent = false;
+                    for (int attempt = 0; attempt < 5 && !sent; ++attempt) {
+                        sent = ReadServoVoltage(1);
+                        if (!sent) vTaskDelay(pdMS_TO_TICKS(10));
+                    }
+                    vTaskDelay(pdMS_TO_TICKS(40));
+                    printf("MLAB_VOLTAGE,ts_ms=%lu,id=1,voltage_v=%.2f,request_sent=%d\r\n",
+                           static_cast<unsigned long>(esp_timer_get_time() / 1000),
+                           servo_voltage, sent ? 1 : 0);
+                    continue;
+                }
+                if (strcmp(line, "mlab tune restore") == 0) {
+                    const bool restored = xgo_tune_restore_factory();
+                    printf("MLAB_TUNE restore_factory=%d; I unchanged\r\n", restored ? 1 : 0);
+                    continue;
+                }
+                char tune_name[16] = {};
+                int tune_value = 0;
+                if (sscanf(line, "mlab tune %15s %d", tune_name, &tune_value) == 2) {
+                    XgoTuneParameter parameter;
+                    if (strcmp(tune_name, "deadband") == 0) {
+                        parameter = XGO_TUNE_DEADBAND;
+                    } else if (strcmp(tune_name, "p") == 0) {
+                        parameter = XGO_TUNE_P;
+                    } else if (strcmp(tune_name, "d") == 0) {
+                        parameter = XGO_TUNE_D;
+                    } else if (strcmp(tune_name, "startup") == 0) {
+                        parameter = XGO_TUNE_STARTUP_FORCE;
+                    } else {
+                        printf("MLAB_TUNE unknown group; use deadband, p, d, startup\r\n");
+                        continue;
+                    }
+                    const bool applied = tune_value >= 0 &&
+                        xgo_tune_apply(parameter, static_cast<uint16_t>(tune_value));
+                    printf("MLAB_TUNE group=%s raw=%d id=1 applied=%d; run 'mlab params' to verify\r\n",
+                           tune_name, tune_value, applied ? 1 : 0);
                     continue;
                 }
                 int poll_joint = 0;

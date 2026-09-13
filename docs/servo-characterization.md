@@ -17,6 +17,12 @@ One ID is requested every 20 ms, so the nominal complete five-ID cycle is 100 ms
   fields. Load is an effort proxy, not a calibrated force.
 - `fb_stale[5]`: explicit stale marker. A joint is marked stale only after
   three unanswered request attempts; a valid status packet clears the marker.
+- `servo_voltage_v`: the most recent read-only SCS009 present-voltage sample from
+  ID 1, in volts. It is refreshed at most once per second so it cannot starve a
+  pending position/status response. This is a bus-voltage diagnostic, not a
+  calibrated current or transient droop measurement.
+- `speed_cmd_raw`: the runtime velocity field sent in the existing `0x2A`
+  position sync-write. It is not a persistent EEPROM speed/time parameter.
 
 The normal poller uses a 60 ms response timeout and three total attempts per
 request. After the third timeout it records a skip, marks that joint stale, and
@@ -66,6 +72,15 @@ characterization. The addresses follow the SCS-series control table and the
 FEETECH SCS protocol; SCS009 is a potentiometer SCS servo, so raw bytes are kept
 until the model-specific table is verified.
 
+The current factory snapshot is also the tuning guardrail. Before any internal
+parameter experiment, compare a fresh `mlab params` capture against the saved
+baseline. Motion Lab does not write a persistent speed/time parameter: its
+`speed_cmd_raw` field is a runtime command value. The reversible tuning interface
+is intentionally staged as deadband, P, D, then startup force; I is not exposed.
+No tuning value should be changed until the repeatable duration baseline and
+voltage check are complete, and each group must be restored and read back before
+the next group.
+
 References:
 
 - [FEETECH communication protocol and memory-table downloads](https://www.feetechrc.com/en/letter-of-agreement.html)
@@ -109,3 +124,13 @@ and record its path, firmware commit, posture, and load separately.
 The selected-joint mode is an observability aid, not a closed-loop controller.
 Do not interpret a high `fb_speed_raw` value as calibrated angular speed until
 the SCS009 scale is independently verified.
+
+## Current baseline result
+
+Three repetitions at each 1.5 s, 3 s, and 6 s duration produced root-joint
+feedback excursions with roughly 5–6% coefficient of variation and no stale
+rows. A safe posture/load comparison was skipped because no explicit verified
+compact/extended pose command exists yet. The ID-1 voltage check measured 8.00 V
+at idle and 8.00–8.10 V during motion; all rows reported `speed_cmd_raw=350`.
+These observations support continuing with factory settings and do not justify
+PID or EEPROM tuning by themselves.

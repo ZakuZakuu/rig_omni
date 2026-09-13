@@ -265,7 +265,7 @@ bool ReadMotorState(uint8_t ID){
 
 float servo_voltage = 0.0;  // ID=1 舵机电池电压
 
-void ReadServoVoltage(uint8_t readID){
+bool ReadServoVoltage(uint8_t readID){
     uint8_t bBuf[8];
     uint8_t CheckSum = 0;
     bBuf[0] = 0xff;
@@ -277,7 +277,7 @@ void ReadServoVoltage(uint8_t readID){
     bBuf[6] = 0x01;      // 读取 1 字节
     CheckSum = readID + 0x04 + 0x02 + 0x3E + 0x01;
     bBuf[7] = ~CheckSum;
-    SendMotorCommand(bBuf, 8);
+    return SendMotorCommand(bBuf, 8);
 }
 
 static bool ReadServoRegisters(uint8_t read_id, uint8_t address, uint8_t length) {
@@ -291,6 +291,67 @@ static bool ReadServoRegisters(uint8_t read_id, uint8_t address, uint8_t length)
     packet[6] = length;
     packet[7] = static_cast<uint8_t>(~(read_id + 0x04 + 0x02 + address + length));
     return SendMotorCommand(packet, sizeof(packet));
+}
+
+static bool WriteServoRegisters(uint8_t write_id, uint8_t address,
+                                const uint8_t* data, uint8_t data_length) {
+    if (data == nullptr || data_length == 0 || data_length > 2) return false;
+    uint8_t packet[9] = {};
+    packet[0] = 0xFF;
+    packet[1] = 0xFF;
+    packet[2] = write_id;
+    packet[3] = static_cast<uint8_t>(data_length + 3);  // inst + addr + data + checksum
+    packet[4] = 0x03;  // WRITE_DATA
+    packet[5] = address;
+    uint8_t checksum = static_cast<uint8_t>(write_id + packet[3] + packet[4] + address);
+    for (uint8_t i = 0; i < data_length; ++i) {
+        packet[6 + i] = data[i];
+        checksum = static_cast<uint8_t>(checksum + data[i]);
+    }
+    packet[6 + data_length] = static_cast<uint8_t>(~checksum);
+    for (int attempt = 0; attempt < 5; ++attempt) {
+        if (SendMotorCommand(packet, static_cast<uint16_t>(7 + data_length))) return true;
+        vTaskDelay(pdMS_TO_TICKS(2));
+    }
+    return false;
+}
+
+struct FactoryTuneValues {
+    uint8_t id;
+    uint8_t cw_deadband;
+    uint8_t ccw_deadband;
+    uint8_t p;
+    uint8_t d;
+    uint16_t startup_force;
+};
+
+static constexpr FactoryTuneValues kFactoryTuneValues[MOTOR_NUM] = {
+    {1, 0x01, 0x01, 0x0F, 0x0F, 0x0018},
+    {2, 0x01, 0x01, 0x0F, 0x0F, 0x0018},
+    {3, 0x01, 0x01, 0x0F, 0x0F, 0x0018},
+    {4, 0x01, 0x01, 0x0F, 0x0F, 0x0018},
+    {5, 0x04, 0x04, 0x0F, 0x0F, 0x0018},
+};
+
+static bool WriteTuneValue(uint8_t id, XgoTuneParameter parameter, uint16_t raw_value) {
+    uint8_t byte_value = static_cast<uint8_t>(raw_value);
+    uint8_t bytes[2] = {
+        static_cast<uint8_t>((raw_value >> 8) & 0xFF),
+        static_cast<uint8_t>(raw_value & 0xFF),
+    };
+    switch (parameter) {
+        case XGO_TUNE_DEADBAND:
+            return WriteServoRegisters(id, 0x1A, &byte_value, 1) &&
+                   WriteServoRegisters(id, 0x1B, &byte_value, 1);
+        case XGO_TUNE_P:
+            return WriteServoRegisters(id, 0x15, &byte_value, 1);
+        case XGO_TUNE_D:
+            return WriteServoRegisters(id, 0x16, &byte_value, 1);
+        case XGO_TUNE_STARTUP_FORCE:
+            return WriteServoRegisters(id, 0x18, bytes, 2);
+        default:
+            return false;
+    }
 }
 
 void EnableMotor(uint8_t ID, uint8_t mode){
@@ -351,6 +412,7 @@ static volatile uint32_t feedback_high_valid_count = 0;
 static volatile uint32_t feedback_high_first_response_ms = 0;
 static volatile uint32_t feedback_high_last_response_ms = 0;
 static volatile uint32_t feedback_high_max_gap_ms = 0;
+static volatile uint32_t feedback_voltage_next_ms = 0;
 
 namespace {
 
@@ -381,6 +443,50 @@ bool is_high_rate_id(uint8_t id) {
 }
 
 }  // namespace
+
+bool xgo_tune_apply(XgoTuneParameter parameter, uint16_t raw_value) {
+    if (motion_lab_is_active() || teach_state != TEACH_IDLE ||
+        parameter < XGO_TUNE_DEADBAND || parameter > XGO_TUNE_STARTUP_FORCE) {
+        return false;
+    }
+    if ((parameter == XGO_TUNE_DEADBAND && raw_value > 8) ||
+        ((parameter == XGO_TUNE_P || parameter == XGO_TUNE_D) && raw_value > 63) ||
+        (parameter == XGO_TUNE_STARTUP_FORCE && raw_value > 128)) {
+        return false;
+    }
+
+    servo_parameter_dump_active = true;
+    reset_feedback_request();
+    vTaskDelay(pdMS_TO_TICKS(20));
+    const bool written = WriteTuneValue(1, parameter, raw_value);
+    vTaskDelay(pdMS_TO_TICKS(30));
+    servo_parameter_dump_active = false;
+    return written;
+}
+
+bool xgo_tune_restore_factory() {
+    if (motion_lab_is_active() || teach_state != TEACH_IDLE) return false;
+
+    servo_parameter_dump_active = true;
+    reset_feedback_request();
+    vTaskDelay(pdMS_TO_TICKS(20));
+    bool restored = true;
+    for (const FactoryTuneValues& values : kFactoryTuneValues) {
+        restored = WriteServoRegisters(values.id, 0x1A, &values.cw_deadband, 1) && restored;
+        restored = WriteServoRegisters(values.id, 0x1B, &values.ccw_deadband, 1) && restored;
+        restored = WriteServoRegisters(values.id, 0x15, &values.p, 1) && restored;
+        restored = WriteServoRegisters(values.id, 0x16, &values.d, 1) && restored;
+        const uint8_t startup[2] = {
+            static_cast<uint8_t>((values.startup_force >> 8) & 0xFF),
+            static_cast<uint8_t>(values.startup_force & 0xFF),
+        };
+        restored = WriteServoRegisters(values.id, 0x18, startup, 2) && restored;
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    vTaskDelay(pdMS_TO_TICKS(30));
+    servo_parameter_dump_active = false;
+    return restored;
+}
 
 struct ServoParameterSpec {
     const char* name;
@@ -626,6 +732,15 @@ void xgo_feedback_poll() {
                 feedback_poll_id = next_feedback_id(feedback_poll_id);
             }
             reset_feedback_request();
+        }
+    }
+
+    // Voltage is diagnostic telemetry only. Sample it at 1 Hz when the status
+    // request slot is free, and never let it hold up a pending joint response.
+    if (!feedback_poll_waiting && now_ms >= feedback_voltage_next_ms) {
+        if (ReadServoVoltage(1)) {
+            feedback_voltage_next_ms = now_ms + 1000;
+            return;
         }
     }
 

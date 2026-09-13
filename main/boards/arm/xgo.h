@@ -82,6 +82,16 @@ void xgo_feedback_poll_disable();
 void xgo_feedback_poll_print_stats();
 // Read-only SCS009 factory/control-table snapshot, printed to UART0.
 void xgo_dump_factory_parameters();
+enum XgoTuneParameter {
+    XGO_TUNE_DEADBAND = 0,
+    XGO_TUNE_P,
+    XGO_TUNE_D,
+    XGO_TUNE_STARTUP_FORCE,
+};
+// Reversible, single-group SCS009 tuning for the root servo (ID 1). The
+// caller must keep Motion Lab/teach idle; I gain is intentionally untouched.
+bool xgo_tune_apply(XgoTuneParameter parameter, uint16_t raw_value);
+bool xgo_tune_restore_factory();
 //Action & Behavior Functions
 void set_action_loop_flag(uint8_t flag);
 
@@ -137,6 +147,6 @@ void touch_wiggle_trigger();  // 触摸双击：pitch/roll 快速正弦摆动 1s
 
 // BLE/XGO 风格串口协议入口（从BLE FFF2 收到的数据直接丢给这里）
 void lulu_ble_on_rx_bytes(const uint8_t* data, size_t len);
-void ReadServoVoltage(uint8_t ID);
+bool ReadServoVoltage(uint8_t ID);
 
 #endif
