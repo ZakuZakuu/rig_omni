@@ -1016,16 +1016,16 @@ public:
             bool header_emitted = false;
             while (true) {
                 MotionLabStatus status = {};
-                const int64_t now_us = esp_timer_get_time();
-                motion_lab_get_status(&status, static_cast<uint32_t>(now_us));
+                const uint32_t now_us = static_cast<uint32_t>(esp_timer_get_time());
+                motion_lab_get_status(&status, now_us);
                 if (status.active) {
                     if (!header_emitted) {
-                        printf("MLAB,ts_us,experiment,trajectory,elapsed_ms,total_ms,cmd_deg[5],fb_pos[5],fb_speed_raw[5],fb_load_raw[5]\\r\\n");
+                        printf("MLAB,ts_ms,experiment,trajectory,elapsed_ms,total_ms,cmd_deg[5],fb_pos[5],fb_speed_raw[5],fb_load_raw[5]\\r\\n");
                         header_emitted = true;
                     }
-                    printf("MLAB,%lld,%d,%d,%lu,%lu,%.3f|%.3f|%.3f|%.3f|%.3f,"
+                    printf("MLAB,%lu,%d,%d,%lu,%lu,%.3f|%.3f|%.3f|%.3f|%.3f,"
                            "%d|%d|%d|%d|%d,%.0f|%.0f|%.0f|%.0f|%.0f,%d|%d|%d|%d|%d\\r\\n",
-                           static_cast<long long>(now_us), status.experiment, status.trajectory,
+                           static_cast<unsigned long>(now_us / 1000), status.experiment, status.trajectory,
                            static_cast<unsigned long>(status.elapsed_ms),
                            static_cast<unsigned long>(status.total_duration_ms),
                            status.command_deg[0], status.command_deg[1], status.command_deg[2],
