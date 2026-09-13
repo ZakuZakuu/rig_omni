@@ -1045,13 +1045,29 @@ public:
         xTaskCreatePinnedToCore([](void* arg) {
             (void)arg;
             char line[192];
+            size_t line_length = 0;
             printf("MLAB_CONSOLE ready; type 'mlab help' and press Enter\r\n");
             while (true) {
-                if (fgets(line, sizeof(line), stdin) == nullptr) {
+                // ESP-IDF monitor configures UART0 in raw mode, so stdio can
+                // return after every character rather than every newline.
+                const int input = getchar();
+                if (input == EOF) {
                     vTaskDelay(pdMS_TO_TICKS(50));
                     continue;
                 }
-                line[strcspn(line, "\r\n")] = '\0';
+                if (input == '\b' || input == 0x7f) {
+                    if (line_length > 0) --line_length;
+                    continue;
+                }
+                if (input != '\r' && input != '\n') {
+                    if (input >= 0x20 && input <= 0x7e && line_length + 1 < sizeof(line)) {
+                        line[line_length++] = static_cast<char>(input);
+                    }
+                    continue;
+                }
+                if (line_length == 0) continue;
+                line[line_length] = '\0';
+                line_length = 0;
 
                 if (strcmp(line, "mlab help") == 0) {
                     PrintMotionLabConsoleHelp();
