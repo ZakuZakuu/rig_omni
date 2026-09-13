@@ -138,3 +138,17 @@ This run is therefore a useful observability failure record, not a servo-quality
 measurement. Do not tune internal P/D/dead-zone values from it. The retry-on-
 dropped-poll build (`44773a3`) must be flashed and repeated under the same
 experiment before deciding whether more bus scheduling work is needed.
+
+## 2026-09-13 — Hold test confirms a shared feedback stall
+
+The subsequent `mlab hold` log held all five command positions constant for a
+10-second experiment. Most samples were in the expected roughly 0–110 ms range,
+but around elapsed 2.4–3.4 s all joints simultaneously became stale, with ages
+up to approximately 610–696 ms, before recovering. Because the command was held,
+this cannot be attributed to the root joint's motion or load. It points to a
+shared receive/scheduling/bus interruption that must be isolated before servo
+parameter tuning.
+
+The console banner now identifies the intended diagnostic build as
+`feedback_poll=20ms; retry=on`, making future hardware logs traceable even when
+the Git commit is not included in the monitor capture.
