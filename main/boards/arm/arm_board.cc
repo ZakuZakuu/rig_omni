@@ -81,7 +81,7 @@ void PrintMotionLabConsoleHelp() {
     printf("MLAB_CONSOLE commands:\r\n"
            "  mlab hold\r\n"
            "  mlab visible [joint 0..4]  (10 deg, 1.5 s out, 1 s hold, 1.5 s back)\r\n"
-           "  mlab run <experiment 0..2 or 4> <trajectory 0..2> <joint 0..4> <amplitude_deg 1..10> "
+           "  mlab run <experiment 0..2 or 4> <trajectory 0..2> <joint 0..4> <amplitude_deg -10..-1 or 1..10> "
            "<duration_ms 500..30000> <stagger_ms 0..2000> <max_velocity_deg_s 1..90> "
            "<max_acceleration_deg_s2 1..500> <deadband_mdeg 0..2000>\r\n"
            "  mlab poll <joint 0..4> <period_ms 5..100>  (selected-joint high-rate feedback)\r\n"

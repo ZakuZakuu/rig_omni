@@ -95,7 +95,8 @@ bool valid_config(const MotionLabConfig& config) {
         return false;
     }
     if (config.experiment == kMotionLabHold) return config.amplitude_deg == 0.0f;
-    return config.amplitude_deg >= 1.0f && config.amplitude_deg <= 10.0f;
+    const float amplitude_abs = fabsf(config.amplitude_deg);
+    return amplitude_abs >= 1.0f && amplitude_abs <= 10.0f;
 }
 
 uint32_t total_duration_ms() {

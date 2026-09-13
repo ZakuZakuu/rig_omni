@@ -30,6 +30,11 @@ byte retained since boot, its timestamp, and an occurrence count for each ID.
 This is intentionally separate from the normal telemetry CSV and does not send
 any write or torque command.
 
+The console `mlab run` amplitude accepts either sign (`-10..-1` or `1..10`),
+allowing a mirrored physical-direction test without changing any servo register.
+The safety check applies the signed target to the current feedback position and
+rejects either direction outside the conservative count range.
+
 The normal poller uses a 60 ms response timeout and three total attempts per
 request. After the third timeout it records a skip, marks that joint stale, and
 continues with the next ID. This bounds the damage from an unplugged or
@@ -156,3 +161,10 @@ same as B. Neither was a whole-motion improvement, so the final reversible
 profile is factory startup=24 with factory P/D/I and dead zones. Startup-force
 tuning is considered inconclusive/negative for this joint and is paused rather
 than being escalated.
+
+The follow-up direction comparison used the factory baseline and three repeated
+`+10°` and three repeated `−10°` minimum-jerk sweeps at 2.8 s with identical
+velocity/acceleration limits. The raw captures are under
+`backups/motion-lab-2026-09-13-voltage/direction_*10_r*.log`. The visual result
+must be judged by physical direction versus outbound/return phase; telemetry is
+provided to confirm sign and amplitude but does not choose the interpretation.

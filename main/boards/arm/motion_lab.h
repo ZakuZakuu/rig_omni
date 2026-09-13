@@ -26,6 +26,8 @@ struct MotionLabConfig {
     MotionLabExperiment experiment;
     MotionLabTrajectory trajectory;
     uint8_t joint_index;  // Used by kMotionLabSingleJointSweep.
+    // Signed excursion: positive and negative values test opposite physical
+    // directions while preserving the same trajectory magnitude.
     float amplitude_deg;
     // Complete out-and-back duration for sweeps, hold duration for kMotionLabHold,
     // or one-way transition duration for kMotionLabStepHoldReturn.

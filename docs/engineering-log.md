@@ -452,3 +452,25 @@ feedback steps, the working category is in-motion dwell-then-jump / stick-slip.
 Endpoint ringing is not established by the hold test and will be judged during
 the visible A/B/C motion sequence. No automatic telemetry-based winner will be
 selected.
+
+## 2026-09-13 — Mirrored physical-direction comparison
+
+The factory baseline was restored and read back before this comparison: all five
+servos had startup=`0x0018`, P/D/I=`0F/0F/00`, and their original dead zones.
+Motion Lab was extended to accept signed amplitudes so the same trajectory could
+be run in the opposite physical direction. No servo parameter was changed during
+the comparison.
+
+The protocol was three repeated `+10°` sweeps followed by three repeated `−10°`
+sweeps, each `joint 0`, minimum-jerk, 2.8 s, `max_velocity=15`,
+`max_acceleration=30`, zero command deadband. The captures are:
+
+- `direction_plus10_r1.log`, `direction_plus10_r2.log`, `direction_plus10_r3.log`
+- `direction_minus10_r1.log`, `direction_minus10_r2.log`, `direction_minus10_r3.log`
+
+All six runs completed with zero stale rows. Telemetry confirmed the signed
+command ranges and roughly 10° excursions; voltage stayed at 7.9–8.0 V and
+`speed_cmd_raw` remained 350. The user's visual comparison of + versus − is the
+decisive result: if one physical sign is consistently worse, investigate
+direction-dependent friction/backlash or CW/CCW servo behavior; if both signs show
+the same outbound/return asymmetry, return to trajectory/start-state effects.
