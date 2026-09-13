@@ -137,4 +137,5 @@ PID or EEPROM tuning by themselves.
 
 The voltage-enabled rerun on commit `3d276c2` repeated each duration three times
 and preserved `speed_cmd_raw=350` in all 9 captures. Voltage stayed within
-7.90–8.10 V, with no stale rows; the raw logs are under `/tmp/rig_voltage_duration_*`.
+7.90–8.10 V, with no stale rows. The raw logs are preserved outside Git under
+`backups/motion-lab-2026-09-13-voltage/` with a `SHA256SUMS` manifest.
