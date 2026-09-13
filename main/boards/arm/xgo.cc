@@ -335,6 +335,9 @@ struct ServoParameterCapture {
 
 static ServoParameterCapture servo_parameter_capture;
 static volatile bool servo_parameter_dump_active = false;
+static volatile uint8_t feedback_poll_id = 1;
+static volatile bool feedback_poll_waiting = false;
+static volatile uint32_t feedback_poll_sent_ms = 0;
 
 struct ServoParameterSpec {
     const char* name;
@@ -407,6 +410,7 @@ void xgo_dump_factory_parameters() {
     }
 
     servo_parameter_dump_active = true;
+    feedback_poll_waiting = false;
     vTaskDelay(pdMS_TO_TICKS(20));
     printf("SCS009_PARAM dump: read-only; no EEPROM unlock/write performed\r\n");
     printf("SCS009_PARAM,id,name,address,length,raw_hex,ts_ms\r\n");
@@ -513,6 +517,12 @@ void xgo_rx(){
                             motor[motor_index].FbTimestampMs =
                                 static_cast<uint32_t>(esp_timer_get_time() / 1000);
                             motor[motor_index].FbSequence++;
+                            if (feedback_poll_waiting && packet_id == feedback_poll_id) {
+                                feedback_poll_waiting = false;
+                                const uint8_t next_poll_id = feedback_poll_id >= MOTOR_NUM
+                                    ? 1 : static_cast<uint8_t>(feedback_poll_id + 1);
+                                feedback_poll_id = next_poll_id;
+                            }
                             // printf("motor[%d].FbPos: %d \r\n", id, motor[id].FbPos);
                             // 检测堵转（示教模式中跳过：扭矩已关，反馈滞后是正常的）
                             if (teach_state != TEACH_RECORDING) {
@@ -534,14 +544,21 @@ void xgo_rx(){
 }           // end xgo_rx
 
 void xgo_feedback_poll() {
-    static uint8_t poll_id = 1;
     if (servo_parameter_dump_active) {
         return;
     }
-    if (ReadMotorState(poll_id)) {
-        if (++poll_id > MOTOR_NUM) {
-            poll_id = 1;
+    const uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+    if (feedback_poll_waiting) {
+        // A sent request is not considered progress until its matching valid
+        // status packet is parsed. Retry the same ID after a bounded wait.
+        if (now_ms - feedback_poll_sent_ms < 60) {
+            return;
         }
+        feedback_poll_waiting = false;
+    }
+    if (ReadMotorState(feedback_poll_id)) {
+        feedback_poll_sent_ms = now_ms;
+        feedback_poll_waiting = true;
     }
 }
 

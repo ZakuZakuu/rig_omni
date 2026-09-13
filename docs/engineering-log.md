@@ -152,3 +152,8 @@ parameter tuning.
 The console banner now identifies the intended diagnostic build as
 `feedback_poll=20ms; retry=on`, making future hardware logs traceable even when
 the Git commit is not included in the monitor capture.
+
+The banner-confirmed build still showed the same class of stall: hold-test age
+medians were about 52–54 ms, while maxima reached 300–807 ms. The next revision
+therefore changes the polling invariant from “request sent” to “matching valid
+response received”; only the latter advances the ID, with a 60 ms retry timeout.
