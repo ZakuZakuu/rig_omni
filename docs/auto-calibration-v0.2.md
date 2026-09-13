@@ -61,7 +61,10 @@ runs had fresh feedback and 7.8–8.2 V. The telemetry ranking was:
 2. D — P 12 + runtime profile (score 9.12);
 3. A — factory/null control (score 9.17).
 
-This ranking is not a perceptual win. E, D, and A must be run as repeated,
-clearly labelled visual candidates. Only after that comparison should a profile
-be persisted in `calibration/profiles/joint0.yaml`; otherwise document the
-hardware-dominated limit and keep the verified factory profile.
+The required repeated visual comparison was then performed. E, D, and A were
+each run with the same sequence; the human assessment was that all three were
+roughly equally jerky, with no meaningful perceptual winner. The verified
+factory profile is therefore retained and no candidate is persisted as an
+active compensation profile. The remaining limitation is treated as
+hardware-dominated for this milestone; further P/D/deadband/startup tuning is
+time-boxed out of scope and work can move to Creature Motion design.

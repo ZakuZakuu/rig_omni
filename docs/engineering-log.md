@@ -577,3 +577,13 @@ when later fields restored. The restore implementation now inserts a bounded
 delay between each register write, and a write/readback test confirmed P=15,
 D=15, startup=24, and dead zones 1/1 after restoring from P=12. This is a
 reproducibility and safety fix, not a motion-quality claim.
+
+The required human comparison was completed afterward. Candidate E
+(startup=32 plus runtime compensation), candidate D (P=12 plus the same
+runtime compensation), and the factory/null candidate A were each run with
+joint-0 10° minimum-jerk motions in both directions. The user reported no
+meaningful perceptual difference; all remained visibly jerky. A final readback
+confirmed joint 0 P/D/I=`0F/0F/00`, startup=`0x0018`, dead zones=`0x01/0x01`,
+and `MLAB_COMP enabled=0`. v0.2 therefore closes as hardware-dominated with
+the factory profile retained; no candidate is promoted and the next milestone
+is Creature Motion rather than more low-level actuator tuning.

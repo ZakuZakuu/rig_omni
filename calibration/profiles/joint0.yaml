@@ -1,8 +1,8 @@
 # Reusable joint-0 calibration profile.  Null means no compensation is
 # justified yet; factory servo EEPROM values remain the source of truth.
 joint: 0
-calibration_version: 1
-source: auto-calibration-2026-09-13
+calibration_version: 2
+source: auto-calibration-2026-09-13-v0.2
 
 cw:
   minimum_smooth_velocity_deg_s: null
@@ -28,10 +28,16 @@ metrics:
   static_jitter_counts: 35.0
   clockwise_jump_score: 11.109
   counterclockwise_jump_score: 8.663
-  classification: mixed-or-hardware-limited
+  v02_candidate_scores:
+    startup32_runtime: 7.34
+    p12_runtime: 9.12
+    factory: 9.17
+  classification: hardware-dominated-no-perceptual-win
 
 notes:
   - Keep this file separate from Motion Engine source so recalibration is replaceable.
   - Do not copy null values into SCS009 EEPROM without a separate reversible experiment.
   - 16 runs used fixed 10 degree endpoints, 3/5 s durations, 8/15 deg/s limits, and 60 deg/s2 acceleration limiting.
   - Telemetry did not justify a position LUT or a minimum-velocity law; retain factory behavior.
+  - v0.2 human comparison of startup32+runtime, P12+runtime, and factory showed no meaningful visual difference.
+  - Retain factory servo values and disabled runtime compensation; move on to Creature Motion.
