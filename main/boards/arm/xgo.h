@@ -23,7 +23,11 @@ typedef struct
 	short DesTor;
 	short FbPos;
     float FbSpd;
-    short FbTor;
+	short FbTor;
+	uint8_t FbError;
+	uint8_t FbLastError;
+	uint32_t FbLastErrorMs;
+	uint32_t FbErrorCount;
 	uint32_t FbTimestampMs;
 	uint32_t FbSequence;
 	bool FbStale;
@@ -82,6 +86,8 @@ void xgo_feedback_poll_disable();
 void xgo_feedback_poll_print_stats();
 // Read-only SCS009 factory/control-table snapshot, printed to UART0.
 void xgo_dump_factory_parameters();
+// Read-only live/error-latch snapshot for servo bring-up diagnostics.
+void xgo_print_servo_status();
 enum XgoTuneParameter {
     XGO_TUNE_DEADBAND = 0,
     XGO_TUNE_P,

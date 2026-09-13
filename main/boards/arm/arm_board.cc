@@ -88,6 +88,7 @@ void PrintMotionLabConsoleHelp() {
            "  mlab poll off\r\n"
            "  mlab poll stats\r\n"
            "  mlab voltage  (read-only ID1 input voltage)\r\n"
+           "  mlab status   (read-only live/error-latch snapshot)\r\n"
            "  mlab tune restore\r\n"
            "  mlab tune deadband <raw 0..8>\r\n"
            "  mlab tune p <raw 0..63>\r\n"
@@ -1191,6 +1192,10 @@ public:
                     printf("MLAB_VOLTAGE,ts_ms=%lu,id=1,voltage_v=%.2f,request_sent=%d\r\n",
                            static_cast<unsigned long>(esp_timer_get_time() / 1000),
                            servo_voltage, sent ? 1 : 0);
+                    continue;
+                }
+                if (strcmp(line, "mlab status") == 0) {
+                    xgo_print_servo_status();
                     continue;
                 }
                 if (strcmp(line, "mlab tune restore") == 0) {

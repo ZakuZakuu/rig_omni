@@ -583,6 +583,18 @@ void xgo_dump_factory_parameters() {
     printf("SCS009_PARAM dump: complete\r\n");
 }
 
+void xgo_print_servo_status() {
+    printf("MLAB_SERVO_STATUS,id,error_hex,last_error_hex,last_error_ts_ms,error_count,fb_pos,fb_speed_raw,fb_load_raw,stale\r\n");
+    for (int i = 0; i < MOTOR_NUM; ++i) {
+        printf("MLAB_SERVO_STATUS,%d,%02X,%02X,%lu,%lu,%d,%d,%d,%d\r\n",
+               i + 1, motor[i].FbError, motor[i].FbLastError,
+               static_cast<unsigned long>(motor[i].FbLastErrorMs),
+               static_cast<unsigned long>(motor[i].FbErrorCount),
+               motor[i].FbPos, static_cast<int>(motor[i].FbSpd), motor[i].FbTor,
+               motor[i].FbStale ? 1 : 0);
+    }
+}
+
 void xgo_rx(){
     uint8_t tempBuf[1];
     uint8_t res = 0; 
@@ -660,6 +672,14 @@ void xgo_rx(){
                         TOR_HIGH_Byte =  rxBuffer[rxDataLen + 2];
                         if(packet_id>0&&packet_id<=MOTOR_NUM){
                             const uint8_t motor_index = packet_id - 1;
+                            const uint8_t status_error = rxBuffer[4];
+                            motor[motor_index].FbError = status_error;
+                            if (status_error != 0) {
+                                motor[motor_index].FbLastError = status_error;
+                                motor[motor_index].FbLastErrorMs =
+                                    static_cast<uint32_t>(esp_timer_get_time() / 1000);
+                                motor[motor_index].FbErrorCount++;
+                            }
                             motor[motor_index].FbPos = POS_HIGH_Byte | (POS_LOW_Byte << 8);
                             motor[motor_index].FbSpd = VEL_HIGH_Byte | (VEL_LOW_Byte << 8);
                             motor[motor_index].FbTor = TOR_HIGH_Byte | (TOR_LOW_Byte << 8);

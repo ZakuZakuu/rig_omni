@@ -24,6 +24,12 @@ One ID is requested every 20 ms, so the nominal complete five-ID cycle is 100 ms
 - `speed_cmd_raw`: the runtime velocity field sent in the existing `0x2A`
   position sync-write. It is not a persistent EEPROM speed/time parameter.
 
+For a suspected single-servo torque loss, use the read-only diagnostic command
+`mlab status`. It prints the latest protocol error byte, the last non-zero error
+byte retained since boot, its timestamp, and an occurrence count for each ID.
+This is intentionally separate from the normal telemetry CSV and does not send
+any write or torque command.
+
 The normal poller uses a 60 ms response timeout and three total attempts per
 request. After the third timeout it records a skip, marks that joint stale, and
 continues with the next ID. This bounds the damage from an unplugged or

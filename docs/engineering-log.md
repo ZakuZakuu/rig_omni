@@ -415,6 +415,13 @@ factory P/D/I and dead zones. The post-event captures are preserved under
 servo temperature/protection indicators and reproduce only under direct human
 supervision after the cause is understood.
 
+To make a future transient observable without expanding the normal telemetry
+rate, the firmware now retains each servo status packet's protocol error byte,
+last non-zero error timestamp, and count. The read-only `mlab status` command
+prints this snapshot. This diagnostic build compiles successfully; it should be
+flashed only when the arm is supported and observed, and no motion test should
+be run until the torque-loss cause is understood.
+
 ## 2026-09-13 — Comparable endpoint protocol and hold classification
 
 The original 1.5 s condition is excluded from speed comparisons. With the fixed
