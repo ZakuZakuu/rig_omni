@@ -138,6 +138,14 @@ else()
 endif()
 list(APPEND SOURCES ${BOARD_SOURCES})
 
+# Keep this diagnostic module explicit: CMake's board-source glob is evaluated
+# during configuration and otherwise does not notice a newly added .cc file in
+# an already-configured build directory.
+if(CONFIG_BOARD_TYPE_ARM)
+    list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/boards/arm/motion_lab.cc")
+    list(APPEND SOURCES "boards/arm/motion_lab.cc")
+endif()
+
 # Select audio processor according to Kconfig
 if(CONFIG_USE_AUDIO_PROCESSOR)
     list(APPEND SOURCES "audio/processors/afe_audio_processor.cc")

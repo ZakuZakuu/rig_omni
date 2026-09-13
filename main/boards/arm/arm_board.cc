@@ -32,6 +32,7 @@
 #include "xgo.h"
 #include "xgo_action.h"
 #include "idle_motion.h"
+#include "motion_lab.h"
 #include "imu.h"
 
 #define TAG "ARM"
@@ -603,6 +604,80 @@ private:
                 }
             });
 
+        mcp_server.AddTool("self.arm.motion_lab.run",
+            "运行受控 Motion Lab 实验。experiment: 0=单关节往返, 1=五关节同步往返, "
+            "2=五关节错峰往返, 3=固定姿态保持。trajectory: 0=线性, 1=三次缓动, 2=最小加加速度。"
+            "实验会暂时隔离空闲微动和预设动作，振幅限制在 10 度以内，并以 MLAB CSV 行输出遥测。",
+            PropertyList({
+                Property("experiment", kPropertyTypeInteger, 0, 0, 3),
+                Property("trajectory", kPropertyTypeInteger, 2, 0, 2),
+                Property("joint", kPropertyTypeInteger, 0, 0, 4),
+                Property("amplitude_deg", kPropertyTypeInteger, 3, 0, 10),
+                Property("duration_ms", kPropertyTypeInteger, 2000, 500, 30000),
+                Property("stagger_ms", kPropertyTypeInteger, 120, 0, 2000),
+                Property("max_velocity_deg_s", kPropertyTypeInteger, 45, 1, 90),
+                Property("max_acceleration_deg_s2", kPropertyTypeInteger, 180, 1, 500),
+                Property("deadband_mdeg", kPropertyTypeInteger, 250, 0, 2000),
+            }),
+            [this](const PropertyList& properties) -> ReturnValue {
+                if (calibrate_mode == 1) return std::string("标定模式中，Motion Lab 被拒绝");
+                if (teach_state != TEACH_IDLE) return std::string("示教模式中，Motion Lab 被拒绝");
+
+                MotionLabConfig config = {
+                    .experiment = static_cast<MotionLabExperiment>(properties["experiment"].value<int>()),
+                    .trajectory = static_cast<MotionLabTrajectory>(properties["trajectory"].value<int>()),
+                    .joint_index = static_cast<uint8_t>(properties["joint"].value<int>()),
+                    .amplitude_deg = static_cast<float>(properties["amplitude_deg"].value<int>()),
+                    .duration_ms = static_cast<uint32_t>(properties["duration_ms"].value<int>()),
+                    .stagger_ms = static_cast<uint32_t>(properties["stagger_ms"].value<int>()),
+                    .max_velocity_deg_s = static_cast<float>(properties["max_velocity_deg_s"].value<int>()),
+                    .max_acceleration_deg_s2 = static_cast<float>(properties["max_acceleration_deg_s2"].value<int>()),
+                    .deadband_deg = properties["deadband_mdeg"].value<int>() / 1000.0f,
+                };
+                int16_t feedback[MOTOR_NUM];
+                int16_t zero[MOTOR_NUM];
+                for (int i = 0; i < MOTOR_NUM; ++i) {
+                    feedback[i] = motor[i].FbPos;
+                    zero[i] = motor[i].ZeroPos;
+                }
+                const MotionLabStartResult result = motion_lab_start(config, feedback, zero);
+                if (result != kMotionLabStarted) {
+                    return std::string("Motion Lab 未启动: ") + motion_lab_start_result_string(result);
+                }
+                Action_ID = 0;
+                actionLoop_FLAG = 0;
+                ESP_LOGI(TAG, "Motion Lab started: experiment=%d trajectory=%d amplitude=%.1f duration=%lums",
+                         config.experiment, config.trajectory, config.amplitude_deg,
+                         static_cast<unsigned long>(config.duration_ms));
+                return std::string("Motion Lab 已启动；请在串口日志中收集 MLAB CSV 行");
+            });
+
+        mcp_server.AddTool("self.arm.motion_lab.stop",
+            "立即停止 Motion Lab，命令机械臂回到实验开始时的反馈姿态，并恢复之前的空闲微动状态。",
+            PropertyList(),
+            [this](const PropertyList& properties) -> ReturnValue {
+                if (!motion_lab_is_active()) return std::string("Motion Lab 当前未运行");
+                motion_lab_stop();
+                return std::string("Motion Lab 正在停止并返回起始姿态");
+            });
+
+        mcp_server.AddTool("self.arm.motion_lab.status",
+            "查询 Motion Lab 的运行状态、时间进度和当前五轴命令角度。",
+            PropertyList(),
+            [this](const PropertyList& properties) -> ReturnValue {
+                MotionLabStatus status = {};
+                motion_lab_get_status(&status, static_cast<uint32_t>(esp_timer_get_time()));
+                char result[256];
+                snprintf(result, sizeof(result),
+                         "active=%d experiment=%d trajectory=%d elapsed_ms=%lu total_ms=%lu cmd_deg=[%.2f,%.2f,%.2f,%.2f,%.2f]",
+                         status.active ? 1 : 0, status.experiment, status.trajectory,
+                         static_cast<unsigned long>(status.elapsed_ms),
+                         static_cast<unsigned long>(status.total_duration_ms),
+                         status.command_deg[0], status.command_deg[1], status.command_deg[2],
+                         status.command_deg[3], status.command_deg[4]);
+                return std::string(result);
+            });
+
         mcp_server.AddTool("self.arm.stretch",
             "让机械臂执行伸懒腰动作。机械臂会先前倾伸展身体和手臂，保持伸展姿态时左右微微摇摆，"
             "然后缓慢收回回到正常站立姿态。适用于用户说'伸个懒腰''活动一下'等场景。",
@@ -896,6 +971,37 @@ public:
             }
             vTaskDelete(NULL);
         }, "xgo_rx_task", 4096, this, 5, &xgo_rx_task_handle_, 1);
+
+        // Telemetry is deliberately independent of the 2 ms control task.
+        // Values are raw servo feedback: load is an effort proxy, not force.
+        xTaskCreatePinnedToCore([](void* arg) {
+            (void)arg;
+            bool header_emitted = false;
+            while (true) {
+                MotionLabStatus status = {};
+                const int64_t now_us = esp_timer_get_time();
+                motion_lab_get_status(&status, static_cast<uint32_t>(now_us));
+                if (status.active) {
+                    if (!header_emitted) {
+                        printf("MLAB,ts_us,experiment,trajectory,elapsed_ms,total_ms,cmd_deg[5],fb_pos[5],fb_speed_raw[5],fb_load_raw[5]\\r\\n");
+                        header_emitted = true;
+                    }
+                    printf("MLAB,%lld,%d,%d,%lu,%lu,%.3f|%.3f|%.3f|%.3f|%.3f,"
+                           "%d|%d|%d|%d|%d,%.0f|%.0f|%.0f|%.0f|%.0f,%d|%d|%d|%d|%d\\r\\n",
+                           static_cast<long long>(now_us), status.experiment, status.trajectory,
+                           static_cast<unsigned long>(status.elapsed_ms),
+                           static_cast<unsigned long>(status.total_duration_ms),
+                           status.command_deg[0], status.command_deg[1], status.command_deg[2],
+                           status.command_deg[3], status.command_deg[4],
+                           motor[0].FbPos, motor[1].FbPos, motor[2].FbPos, motor[3].FbPos, motor[4].FbPos,
+                           motor[0].FbSpd, motor[1].FbSpd, motor[2].FbSpd, motor[3].FbSpd, motor[4].FbSpd,
+                           motor[0].FbTor, motor[1].FbTor, motor[2].FbTor, motor[3].FbTor, motor[4].FbTor);
+                } else {
+                    header_emitted = false;
+                }
+                vTaskDelay(pdMS_TO_TICKS(50));  // 20 Hz telemetry outside real-time control.
+            }
+        }, "motion_lab_telemetry", 4096, this, 1, nullptr, 1);
         ESP_LOGI(TAG, "XGO control tasks created");
     }
 

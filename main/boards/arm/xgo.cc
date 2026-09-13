@@ -15,6 +15,7 @@
 #include <esp_random.h>
 #include "xgo_action.h"
 #include "idle_motion.h"
+#include "motion_lab.h"
 #include "application.h"
 #include "board.h"
 #include "display.h"
@@ -644,6 +645,44 @@ void xgo_control() {
     counter++;
     counter2++;
 
+    // Motion Lab has exclusive ownership of direct joint commands. It is a
+    // diagnostic path: no IK, idle offsets, or preset Action_ID values may
+    // alter its targets while an experiment is active.
+    static bool motion_lab_owns_control = false;
+    static bool idle_motion_was_enabled = false;
+    if (motion_lab_is_active() || motion_lab_owns_control) {
+        if (!motion_lab_owns_control) {
+            motion_lab_owns_control = true;
+            idle_motion_was_enabled = idle_motion_is_enabled();
+            idle_motion_set_enable(false);
+            Action_ID = 0;
+            actionLoop_FLAG = 0;
+            ESP_LOGI(TAG, "Motion Lab took direct joint control");
+        }
+
+        motion_lab_update(static_cast<uint32_t>(esp_timer_get_time()));
+        if (motion_lab_should_send_command()) {
+            float command_deg[MOTOR_NUM];
+            motion_lab_get_command_deg(command_deg);
+            SetMotorAngle(command_deg, motor_speed);
+        }
+
+        if (motion_lab_take_finished()) {
+            Action_ID = 0;
+            actionLoop_FLAG = 0;
+            idle_motion_set_enable(idle_motion_was_enabled);
+            motion_lab_owns_control = false;
+            ESP_LOGI(TAG, "Motion Lab released direct joint control");
+        }
+
+        if (counter % 50 == 0) {
+            ReadMotorState(read_id);
+            counter = 0;
+            if (++read_id > MOTOR_NUM) read_id = 1;
+        }
+        return;
+    }
+
     // ============================================================
     // 示教模式状态机
     // ============================================================
@@ -959,4 +998,3 @@ void lulu_ble_on_rx_bytes(const uint8_t* data, size_t len) {
         break;
     }
 }
-
