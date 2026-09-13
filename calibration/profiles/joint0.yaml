@@ -1,0 +1,37 @@
+# Reusable joint-0 calibration profile.  Null means no compensation is
+# justified yet; factory servo EEPROM values remain the source of truth.
+joint: 0
+calibration_version: 1
+source: auto-calibration-2026-09-13
+
+cw:
+  minimum_smooth_velocity_deg_s: null
+  position_lead_deg: 0.0
+  startup_force: null
+  deadband: null
+
+ccw:
+  minimum_smooth_velocity_deg_s: null
+  position_lead_deg: 0.0
+  startup_force: null
+  deadband: null
+
+backlash:
+  cw_to_ccw_deg: null
+  ccw_to_cw_deg: null
+
+position_compensation:
+  enabled: false
+  samples: []
+
+metrics:
+  static_jitter_counts: 35.0
+  clockwise_jump_score: 11.109
+  counterclockwise_jump_score: 8.663
+  classification: mixed-or-hardware-limited
+
+notes:
+  - Keep this file separate from Motion Engine source so recalibration is replaceable.
+  - Do not copy null values into SCS009 EEPROM without a separate reversible experiment.
+  - 16 runs used fixed 10 degree endpoints, 3/5 s durations, 8/15 deg/s limits, and 60 deg/s2 acceleration limiting.
+  - Telemetry did not justify a position LUT or a minimum-velocity law; retain factory behavior.

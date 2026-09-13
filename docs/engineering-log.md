@@ -516,3 +516,28 @@ The raw matrix is under
 captures are under its `human_ab/` subdirectory. The profile was restored to
 `mlab comp off` after the comparison. No further automatic actuator tuning is
 planned unless one candidate is visibly and repeatably better.
+
+## 2026-09-13 — Auto-calibration prototype v0.1
+
+The next phase was implemented as a host-side, dependency-free prototype rather
+than a new controller. `tools/motion_lab/auto_calibrate.py` captured joint 0 in
+both physical directions at fixed 10° endpoints, 3 s/5 s durations, 8/15°/s
+velocity limits, 60°/s² acceleration limiting, and two repetitions per cell.
+The script recorded a read-only factory parameter snapshot, voltage and
+feedback-age telemetry, and always disabled the RAM compensation profile in
+cleanup. No SCS009 EEPROM register was written.
+
+`analyze_stutter.py` emitted `metrics.csv`, `events.jsonl`,
+`classification.json`, and a dependency-free SVG command/feedback plot. The
+16-run matrix contained 65 conservative dwell/jump events. CW quality score
+averaged 11.109 versus 8.663 CCW, but CW event-position spread was 2.45° and
+the combined result classified as `mixed-or-hardware-limited` (confidence
+0.45). Every run had fresh feedback and 8.0–8.2 V. The data do not justify a
+position LUT, minimum-smooth-velocity law, or internal PID change; the practical
+next step is Creature Motion with the factory profile rather than an elaborate
+calibration model.
+
+The reusable profile is `calibration/profiles/joint0.yaml`, kept separate from
+Motion Engine source. It records the baseline metrics and leaves directional
+compensation null/disabled. The raw matrix and analysis are preserved outside
+Git under `backups/motion-lab-2026-09-13-auto-calibration/`.
