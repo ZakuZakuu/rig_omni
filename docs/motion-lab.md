@@ -1,6 +1,7 @@
 # Motion Quality Baseline
 
-`dev/motion-lab` adds a deliberately isolated diagnostic path for the RIG-Arm.
+The `feat/creature-runtime` firmware branch carries a deliberately isolated
+diagnostic path for the RIG-Arm.
 It does not replace IK or the stock action system. The path is inactive unless
 explicitly started through its MCP tools.
 
