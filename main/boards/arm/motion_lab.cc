@@ -8,6 +8,9 @@ namespace {
 constexpr float kCountsPerDeg = 1024.0f / 300.0f;
 constexpr int16_t kExperimentMinCount = 100;
 constexpr int16_t kExperimentMaxCount = 923;
+// Keep trajectory integration at the 2 ms control cadence, but limit actual
+// sync-write packets to 50 Hz so feedback queries retain bus bandwidth.
+constexpr uint32_t kCommandPeriodUs = 20000;
 constexpr uint32_t kKeepaliveUs = 100000;
 
 struct MotionLabState {
@@ -217,6 +220,10 @@ void motion_lab_update(uint32_t now_us) {
 
 bool motion_lab_should_send_command() {
     if (!state.command_dirty) return false;
+    if (state.last_send_us != 0 &&
+        state.last_update_us - state.last_send_us < kCommandPeriodUs) {
+        return false;
+    }
     return true;
 }
 

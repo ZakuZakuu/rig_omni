@@ -182,3 +182,39 @@ to age zero; this is a logging correctness fix, not a servo-control change.
 The hold test is now sufficient to proceed to a cautious root-joint motion
 freshness check, but internal servo parameter tuning remains deferred until
 motion logs confirm that the improved age bound persists under load.
+
+## 2026-09-13 — Motion exposes command/feedback bus contention
+
+The first directly controlled root-joint test was run from Codex over the
+newly available `/dev/ttyACM0` device using:
+
+```text
+mlab run 0 2 0 10 4000 0 15 30 0
+```
+
+The firmware banner confirmed `ack=on`. During the stationary portions of the
+run, feedback was present, but once the trajectory began the reported age grew
+continuously into the 0.8–1.2 s range across multiple joints. The command path
+was writing a five-joint sync packet on essentially every 2 ms control tick
+because the experiment explicitly used zero deadband. This saturated the
+half-duplex bus enough to starve the feedback poller; it is a scheduling issue,
+not evidence of a servo parameter failure.
+
+The Motion Lab output path now keeps trajectory integration at 2 ms but limits
+sync-write packets to 50 Hz (20 ms minimum spacing). This preserves the
+requested trajectory shape while reserving bus time for feedback queries. The
+next hardware run should use the same root-joint test so the before/after
+feedback-age comparison is controlled.
+
+The 50 Hz build was flashed directly through the now-visible `/dev/ttyACM0`
+port and the same experiment was repeated. Joint 0 moved from approximately
+463 to 498 counts and back to 462–468 counts, matching the commanded
+approximately 10-degree minimum-jerk excursion. Feedback ages during motion
+were mostly 0–120 ms; isolated samples reached roughly 170–225 ms, with no
+return of the earlier 800–1200 ms accumulation. An unrelated Wi-Fi TLS receive
+error appeared after the experiment and did not prevent the motion log from
+completing.
+
+This establishes 50 Hz sync writes as the current Motion Lab bus-rate baseline.
+It is sufficient to proceed with controlled duration/load comparisons, while
+logs should continue to retain and report occasional samples above 120 ms.
