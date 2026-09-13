@@ -87,3 +87,7 @@ The current working hypothesis is that visible stick-slip may correlate with
   space in the smallest app partition.
 - Hardware validation: pending because no `$RIG_PORT`/USB serial device was
   attached to this engineering session. No flash or motion command was issued.
+- Follow-up after the user reattached the device: the Codex sandbox still had
+  no `/dev/ttyACM*`; `rig_env` reached the Windows USB attach helper but WSL
+  returned `UtilBindVsockAnyPort: socket failed 1`. Direct serial capture is
+  therefore delegated to the already-connected user monitor for this session.
