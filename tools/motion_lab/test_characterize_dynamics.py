@@ -137,6 +137,22 @@ def main() -> int:
         parsed = parse_capture(capture, joint=0)
         assert parsed[1]["fb_ts_ms"] == 150.0
         assert parsed[1]["speed_cmd_raw"] == 1.0
+
+        # Current firmware emits speed_cmd_raw as one scalar for the shared
+        # sync-write. The parser must expose that same value for whichever
+        # selected joint is being analyzed.
+        scalar_capture = capture.with_name(".synthetic-mlab-scalar-capture.log")
+        scalar_capture.write_text(
+            capture.read_text(encoding="utf-8").replace(
+                ",1|0|0|0|0\n", ",350\n"
+            ),
+            encoding="utf-8",
+        )
+        try:
+            scalar_rows = parse_capture(scalar_capture, joint=2)
+            assert scalar_rows[1]["speed_cmd_raw"] == 350.0
+        finally:
+            scalar_capture.unlink()
     finally:
         capture.unlink()
 
@@ -179,6 +195,11 @@ def main() -> int:
     first_reasons = _safety_reasons(first_metric, 3000.0)
     assert first_metric["tracking_error_guard_deg"] < 12.0
     assert any("small-motion sanity guard" in reason for reason in first_reasons)
+    assert first_metric["command_excursion_counts"] == 4.0
+    assert first_metric["achieved_excursion_counts"] == 50.0
+    assert first_metric["quantization_sensitive"] is True
+    assert first_metric["observed_peak_velocity_calibrated"] is False
+    assert "threshold" in first_metric["motion_onset_latency_note"]
 
     with tempfile.TemporaryDirectory(prefix="rig-dynamics-preflight-") as directory:
         output_dir = Path(directory)

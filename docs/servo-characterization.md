@@ -180,6 +180,31 @@ The selected-joint mode is an observability aid, not a closed-loop controller.
 Do not interpret a high `fb_speed_raw` value as calibrated angular speed until
 the SCS009 scale is independently verified.
 
+## Capture parser and small-motion interpretation
+
+`speed_cmd_raw` is emitted by the current firmware as one scalar because the
+same runtime value is used by the position sync-write. The host parser accepts
+that scalar and also accepts the historical five-element array form, selecting
+the requested joint in either case. The raw UART capture is never rewritten.
+
+Every dynamics metric reports commanded and achieved excursion in both degrees
+and encoder counts. With the current conversion (`1024 / 300` counts per
+degree), excursions at or below about 14 counts (roughly 4 degrees) are marked
+`quantization_sensitive`; this is an interpretation flag, not a failure.
+
+`motion_onset_latency_ms` is a robust observation, not pure bus or actuator
+latency. It starts at the first command sample that changes by at least one
+count and ends only after three strictly advancing feedback samples each move
+at least three counts in the requested direction. The different thresholds
+reduce one-count noise but also include command quantization, feedback age,
+mechanical response, and any dwell/stick-slip.
+
+The reported `observed_peak_velocity_deg_s` is derived from timestamped,
+quantized feedback (20 ms resampling plus a local quadratic fit). It remains an
+un-calibrated diagnostic estimate and must not be used as an actuator velocity
+limit. Raw `fb_speed_raw` values are preserved separately until the installed
+servo encoding is verified.
+
 ## Current baseline result
 
 The earlier 1.5 s captures are retained as historical data, but are not directly

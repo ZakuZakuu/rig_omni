@@ -36,6 +36,10 @@ except ImportError:  # pragma: no cover - import path used by package runners
 
 COUNTS_PER_DEG = 1024.0 / 300.0
 DEG_PER_COUNT = 1.0 / COUNTS_PER_DEG
+# A commanded excursion of roughly four degrees is only about fourteen
+# encoder counts on this servo. Treat runs at or below that scale as
+# quantization-sensitive rather than implying sub-count precision.
+QUANTIZATION_SENSITIVE_MAX_COUNTS = 4.0 * COUNTS_PER_DEG
 DEFAULT_JOINT = 2
 DEFAULT_AMPLITUDES = (3, 5, 10)
 DEFAULT_HOLD_MS = 1000
@@ -514,15 +518,42 @@ def analyze_run(rows: list[dict[str, float]], metadata: dict) -> tuple[dict, lis
         "feedback_age_max_ms": max(age_values, default=None),
         "stale_rows": stale_rows,
         "stale_fraction": stale_rows / len(rows),
+        "encoder_resolution_deg_per_count": DEG_PER_COUNT,
+        "command_excursion_counts": command_excursion_counts,
+        "achieved_excursion_counts": achieved_excursion_counts,
         "command_excursion_deg": command_excursion_counts * DEG_PER_COUNT,
         "achieved_excursion_deg": achieved_excursion_counts * DEG_PER_COUNT,
+        "quantization_sensitive": (
+            command_excursion_counts <= QUANTIZATION_SENSITIVE_MAX_COUNTS
+            or achieved_excursion_counts <= QUANTIZATION_SENSITIVE_MAX_COUNTS
+        ),
+        "quantization_note": (
+            "Encoder resolution is approximately %.4f deg/count; this run is "
+            "marked quantization-sensitive when commanded or achieved excursion "
+            "is at most %.2f counts."
+            % (DEG_PER_COUNT, QUANTIZATION_SENSITIVE_MAX_COUNTS)
+        ),
         "tracking_rms_error_deg": math.sqrt(sum(value * value for value in errors_deg) / len(errors_deg)) if errors_deg else None,
         "tracking_peak_error_deg": max((abs(value) for value in errors_deg), default=None),
         "tracking_error_guard_deg": _tracking_error_guard(amplitude),
         "motion_onset_latency_ms": onset_latency,
+        "motion_onset_latency_note": (
+            "Latency is measured from the first command sample changing by at "
+            "least %.1f count to the first set of %d strictly advancing feedback "
+            "samples each displaced by at least %.1f counts. The thresholds are "
+            "deliberately different and the result is not pure transport or "
+            "actuation latency; it also includes command quantization, feedback "
+            "age, and mechanical response."
+            % (ONSET_COMMAND_THRESHOLD_COUNTS, SUSTAINED_ONSET_SAMPLES, ONSET_THRESHOLD_COUNTS)
+        ),
         "motion_10_90_time_ms": time_10_90,
         "observed_peak_velocity_deg_s": max((abs(value) * DEG_PER_COUNT for value in observed_velocity), default=None),
         "velocity_estimator": "20ms linear resample + centered local quadratic fit",
+        "observed_peak_velocity_calibrated": False,
+        "observed_peak_velocity_note": (
+            "Derived from quantized feedback after resampling and a local "
+            "quadratic fit; not a calibrated actuator velocity limit."
+        ),
         "settling_time_ms": settling_time,
         "settling_tolerance_counts": settling_tolerance_counts,
         "endpoint_overshoot_deg": overshoot_counts * DEG_PER_COUNT,
@@ -802,12 +833,28 @@ def _analyze_manifest(output_dir: Path, manifest_path: Path, *, max_load_raw: fl
             for metric in metrics
             if metric.get("reversal_proxy")
         ],
+        "data_quality": {
+            "raw_captures_unchanged": True,
+            "speed_cmd_raw_forms": ["scalar", "historical five-element array"],
+            "speed_cmd_raw_note": (
+                "The parser accepts the current scalar sync-write field and the "
+                "historical per-joint array form."
+            ),
+            "feedback_speed_encoding_verified": False,
+            "derived_velocity_is_calibrated": False,
+        },
         "summary": {
             "all_runs_passed_safety": all(metric["safety_passed"] for metric in metrics) if metrics else False,
             "raw_capture_count": len(run_rows),
             "normalized_csv": str(normalized),
             "raw_speed_note": "fb_speed_raw is reported only as a raw servo value; it is not treated as calibrated angular velocity.",
             "acceleration_note": "No physical acceleration or jerk limit is inferred from sparse quantized feedback.",
+            "metric_interpretation": {
+                "encoder_resolution_deg_per_count": DEG_PER_COUNT,
+                "quantization_sensitive_max_counts": QUANTIZATION_SENSITIVE_MAX_COUNTS,
+                "peak_velocity_is_calibrated": False,
+                "onset_latency_is_pure_transport_latency": False,
+            },
         },
     }
     _write_json(output_dir / "dynamics_report.json", report)
