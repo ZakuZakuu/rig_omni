@@ -13,6 +13,7 @@ from characterize_dynamics import (  # noqa: E402
     _reversal_proxy,
     analyze_run,
 )
+from analyze_stutter import parse_capture  # noqa: E402
 
 
 def _row(index: int, command: float, feedback: float) -> dict[str, float]:
@@ -36,6 +37,24 @@ def _row(index: int, command: float, feedback: float) -> dict[str, float]:
 
 
 def main() -> int:
+    capture = Path(__file__).with_name(".synthetic-mlab-capture.log")
+    rows_for_capture = [
+        "MLAB,100,4,2,0,600,0|0|0|0|0,0|0|0|0|0,0|0|0|0|0,0|0|0|0|0,0|0|0|0|0,100|100|100|100|100,0|0|0|0|0,0|0|0|0|0,8.0,0|0|0|0|0",
+        "MLAB,150,4,2,50,600,1|0|0|0|0,3|0|0|0|0,2|0|0|0|0,4|0|0|0|0,101|100|100|100|100,150|100|100|100|100,0|0|0|0|0,0|0|0|0|0,8.0,1|0|0|0|0",
+    ]
+    capture.write_text(
+        "MLAB,ts_ms,experiment,trajectory,elapsed_ms,total_ms,cmd_deg[5],cmd_pos[5],fb_pos[5],fb_speed_raw[5],fb_load_raw[5],fb_ts_ms[5],fb_age_ms[5],fb_stale[5],servo_voltage_v,speed_cmd_raw\n"
+        + "\n".join(rows_for_capture)
+        + "\n",
+        encoding="utf-8",
+    )
+    try:
+        parsed = parse_capture(capture, joint=0)
+        assert parsed[1]["fb_ts_ms"] == 150.0
+        assert parsed[1]["speed_cmd_raw"] == 1.0
+    finally:
+        capture.unlink()
+
     rows = [_row(index, command, feedback) for index, (command, feedback) in enumerate(
         ((0, 0), (4, 2), (8, 6), (12, 10), (16, 15), (16, 16), (16, 16), (16, 16), (0, 1), (0, 0))
     )]
