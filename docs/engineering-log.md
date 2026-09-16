@@ -610,3 +610,44 @@ image identity separately, flash and verify with ESP-IDF monitor, query
 capability response, unsupported experiment, invalid config without telemetry,
 or any failed readiness/safety gate stops the protocol without an automatic
 retry or follow-up movement.
+
+## 2026-09-17 — First valid supervised conditioning-only run
+
+The deployment gate passed on host firmware commit
+`55bf4b3499df88d8fc9e857f5fee5d8063433750`. The device reported protocol 2,
+experiments `0|1|2|3|4|5`, reversal support, and image ELF SHA
+`24083392406d518d8a86ff748236167b29b24d3f86590fe59defad4ae9b0640f`.
+Read-only preflight passed for all five servo IDs, the parameter snapshot was
+complete, and the observed voltage was 8.0 V.
+
+Exactly one supervised conditioning command was sent:
+
+```text
+mlab run 5 2 2 5 1000 0 8 30 250
+```
+
+The immutable capture is under
+`backups/motion-lab-conditioning-only-2026-09-17-positive-hw1/`. The measured
+commanded excursions were +19 counts (+5.5664°) and −21 counts (−6.1523°).
+Feedback achieved +8 counts (+2.3438°) and −23 counts (−6.7383°), then returned
+to the starting feedback count exactly (0 counts / 0° return error). Feedback
+valid rate was 100%, unique sample rate 16.29 Hz, feedback-age P50/P95/max was
+3/49/107 ms, stale fraction was 0%, voltage was 8.0–8.1 V, and peak raw load
+was 1243. Raw speed values remain uncalibrated diagnostics.
+
+The positive breakaway health gate failed because +8 counts was just below the
+provisional 50% threshold (8.53 counts); the negative direction passed. The
+manifest records `physical_motion_started=true`, `conditioning_passed=false`,
+`formal_run_started=false`, and `executed_runs=0`. Cleanup (`mlab stop`, polling
+off, compensation off) completed. No formal +3° run, negative conditioning, or
+automatic retry was performed. No human visual observation was supplied in the
+terminal record; visual smoothness/any abnormal sound therefore remains
+unclassified rather than inferred from telemetry.
+
+Conclusion: telemetry confirms a real reversal response and exact return, but
+this sequence is not yet an accepted conditioning prelude under the current
+health gate because the positive leg under-traveled. The next hypothesis is to
+have the human review the visible positive leg and decide whether to repeat the
+same conditioning once for repeatability or investigate the positive-direction
+breakaway/measurement behavior before any conditioned +3° experiment. No
+parameter tuning or compensation is justified by this single run.
