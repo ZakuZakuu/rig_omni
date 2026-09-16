@@ -205,6 +205,72 @@ un-calibrated diagnostic estimate and must not be used as an actuator velocity
 limit. Raw `fb_speed_raw` values are preserved separately until the installed
 servo encoding is verified.
 
+## Cold and conditioned small-signal protocols
+
+The first r1/r2 J2 +3-degree captures are retained as **cold / unconditioned**
+evidence: the mechanical state before each run was not standardized. They must
+not be discarded or reinterpreted as a repeatability result.
+
+The characterization harness has an optional, disabled-by-default conditioning
+prelude. Enable it explicitly for a future formal run with
+`--precondition positive` (or `negative`). The positive protocol sends:
+
+```text
+mlab run 5 2 <joint> 5 1000 0 8 30 250
+```
+
+which is the existing minimum-jerk reversal sweep:
+`center -> +5° -> -5° -> center`. The mirrored negative protocol uses `-5°`
+and follows `center -> -5° -> +5° -> center`. The host then observes a quiet
+2-second settle interval and takes a separate read-only `mlab status` snapshot
+before any formal measurement. The conditioning excursion is deliberately
+inside the existing ±10° Motion Lab envelope; it does not change compensation
+or persistent servo parameters.
+
+The harness remains dry-run by default. A future supervised positive run would
+opt in explicitly, for example:
+
+```bash
+python tools/motion_lab/characterize_dynamics.py \
+  --execute --confirm-hardware --max-runs 1 --joint 2 \
+  --amplitudes-deg 3 --tiers gentle --skip-low-speed --skip-reversal \
+  --repetitions 1 --precondition positive --port "$RIG_PORT" \
+  --output-dir backups/motion-lab-conditioned-YYYY-MM-DD
+```
+
+`--max-runs` limits only formal measurement captures; the explicitly selected
+conditioning prelude is always evaluated first and is never counted as a
+formal `runs` entry.
+
+Conditioning is a health/preload gate, not part of formal-run metrics. It must
+show fresh feedback, telemetry-confirmed motion in both directions, no status
+error or stale flag, voltage within the existing observational ~8 V review
+band, raw load below the provisional anomaly gate, and return within five
+encoder counts of the preconditioning center. If any gate fails, the formal
+run is not started. Reports keep `conditioning`, `preflight`, and formal `runs`
+as separate sections and record `formal_run_started` explicitly.
+
+### Initial cold-baseline forensic comparison
+
+The two supervised J2 +3-degree runs remain immutable evidence. Both delivered
+the same ten-count commanded excursion (2.9297°), but r1 achieved seven counts
+(2.0508°) while r2 achieved zero counts. The initial J2 feedback counts were
+152 (r1) and 154 (r2), with command counts 153 and 154; final feedback was 150
+and 154 respectively. Both command trajectories reached their ten-count
+endpoint and held it for approximately one second, so host command delivery
+appears valid. The feedback traces were 144–159 counts in r1 and 153–154 in
+r2; r2 accumulated a ten-to-eleven-count endpoint error while held.
+
+The J2 read-only parameter snapshots were identical: P=0x0F, I=0x00, D=0x0F,
+CW/CCW dead zones=0x01/0x01, startup force=0x0018, and unchanged limits and
+protection values. Feedback freshness was good in both runs (no stale rows;
+sample rate about 16.8–17.0 Hz), while voltage stayed near 8 V and raw loads
+remained below the provisional anomaly gate. The evidence therefore rules out
+a simple host-delivery or telemetry-rate explanation, but does not distinguish
+internal dead-zone/startup-force behavior from mechanical stiction/preload or
+another unresolved state-dependent effect. No pure backlash or servo fault is
+inferred from these two cold runs alone.
+
 ## Current baseline result
 
 The earlier 1.5 s captures are retained as historical data, but are not directly

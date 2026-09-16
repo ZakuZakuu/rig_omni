@@ -16,6 +16,10 @@ from characterize_dynamics import (  # noqa: E402
     _build_plan,
     _build_parser,
     _command_for,
+    _analyze_manifest,
+    _conditioning_entry,
+    _conditioning_health_reasons,
+    _conditioning_metrics,
     _execution_entries,
     _initial_manifest,
     _local_polynomial_velocity,
@@ -23,6 +27,7 @@ from characterize_dynamics import (  # noqa: E402
     _reversal_proxy,
     _run_hardware,
     _safety_reasons,
+    _write_json,
     analyze_run,
 )
 from analyze_stutter import parse_capture  # noqa: E402
@@ -164,6 +169,59 @@ def main() -> int:
     assert len(_execution_entries(plan_groups, 1)) == 1
     assert len(_execution_entries(plan_groups, 2)) == 2
 
+    conditioned_args = _build_parser().parse_args(["--joint", "2", "--precondition", "positive"])
+    positive_conditioning = _conditioning_entry(conditioned_args, "positive")
+    negative_conditioning = _conditioning_entry(conditioned_args, "negative")
+    assert positive_conditioning["description"] == "center -> +5 -> -5 -> center"
+    assert negative_conditioning["description"] == "center -> -5 -> +5 -> center"
+    assert _command_for(positive_conditioning) == "mlab run 5 2 2 5 1000 0 8 30 250"
+    assert _command_for(negative_conditioning) == "mlab run 5 2 2 -5 1000 0 8 30 250"
+    conditioning_rows = [_row(index, command, feedback) for index, (command, feedback) in enumerate(
+        ((0, 100), (5, 120), (5, 80), (0, 100))
+    )]
+    conditioning_metadata = {**positive_conditioning, "run": "conditioning"}
+    conditioning_summary = _conditioning_metrics(
+        conditioning_rows,
+        conditioning_metadata,
+        center_count=100.0,
+        settled_feedback_count=100.0,
+        settle_status={"parse_ok": True, "errors": []},
+    )
+    assert conditioning_summary["conditioning_achieved_positive_counts"] == 20.0
+    assert conditioning_summary["conditioning_achieved_negative_counts"] == 20.0
+    assert not _conditioning_health_reasons(conditioning_summary, conditioned_args)
+    failed_conditioning = dict(conditioning_summary)
+    failed_conditioning["conditioning_achieved_positive_counts"] = 0.0
+    assert _conditioning_health_reasons(failed_conditioning, conditioned_args)
+
+    with tempfile.TemporaryDirectory(prefix="rig-dynamics-separate-metrics-") as directory:
+        output_dir = Path(directory)
+        formal_log = output_dir / "formal.log"
+        formal_log.write_text(_mlab_capture(2.0), encoding="utf-8")
+        formal_entry = {
+            **planned[0],
+            "run": "formal",
+            "log": formal_log.name,
+            "direction": "positive",
+            "command": _command_for(planned[0]),
+        }
+        report_manifest = _initial_manifest(conditioned_args, [formal_entry])
+        report_manifest["runs"] = [formal_entry]
+        report_manifest["conditioning"] = {
+            "enabled": True,
+            "direction": "positive",
+            "conditioning_passed": True,
+            "formal_run_started": True,
+            "metrics": conditioning_summary,
+        }
+        manifest_path = output_dir / "manifest.json"
+        _write_json(manifest_path, report_manifest)
+        report = _analyze_manifest(output_dir, manifest_path, max_load_raw=3000.0)
+        assert report["conditioning"]["enabled"] is True
+        assert report["conditioning"]["formal_run_started"] is True
+        assert [run["run"] for run in report["runs"]] == ["formal"]
+        assert "conditioning_achieved_positive_counts" not in report["runs"][0]
+
     with tempfile.TemporaryDirectory(prefix="rig-dynamics-readiness-") as directory:
         output_dir = Path(directory)
         status_path = output_dir / "status.log"
@@ -214,6 +272,51 @@ def main() -> int:
         assert "mlab stop" in calls and "mlab poll off" in calls and "mlab comp off" in calls
         persisted = json.loads((output_dir / "manifest.json").read_text(encoding="utf-8"))
         assert not persisted["preflight"]["decision"]["passed"]
+
+    with tempfile.TemporaryDirectory(prefix="rig-dynamics-conditioning-") as directory:
+        output_dir = Path(directory)
+        args = _build_parser().parse_args([
+            "--execute", "--confirm-hardware", "--port", "/dev/test",
+            "--output-dir", str(output_dir), "--joint", "2", "--max-runs", "1",
+            "--repetitions", "1", "--precondition", "positive",
+        ])
+        groups, planned = _build_plan(args)
+        manifest = _initial_manifest(args, planned)
+        original_conditioning = dynamics._run_conditioning
+
+        def failed_conditioning(_args, _output_dir, _manifest):
+            return {
+                "enabled": True,
+                "direction": "positive",
+                "conditioning_passed": False,
+                "metrics": {"conditioning_health_reasons": ["synthetic health failure"]},
+            }
+
+        dynamics._run_conditioning = failed_conditioning
+        try:
+            calls, error = _run_with_fake_capture(
+                args, manifest, groups, status_text=_status_capture(), movement_feedback=None
+            )
+        finally:
+            dynamics._run_conditioning = original_conditioning
+        assert isinstance(error, SafetyGateAbort)
+        assert not any(command.startswith("mlab run 4") for command in calls)
+        assert "mlab stop" in calls and "mlab poll off" in calls and "mlab comp off" in calls
+
+    # The confirmation flag remains an independent hard gate: a caller cannot
+    # reach the serial capture path merely by supplying --execute and a port.
+    with tempfile.TemporaryDirectory(prefix="rig-dynamics-no-confirm-") as directory:
+        output_dir = Path(directory)
+        args = _build_parser().parse_args([
+            "--execute", "--port", "/dev/test", "--output-dir", str(output_dir),
+        ])
+        groups, planned = _build_plan(args)
+        try:
+            _run_hardware(args, output_dir, _initial_manifest(args, planned), groups)
+        except ValueError as error:
+            assert "confirm-hardware" in str(error)
+        else:  # pragma: no cover - protects the safety contract
+            raise AssertionError("hardware execution must require --confirm-hardware")
 
     with tempfile.TemporaryDirectory(prefix="rig-dynamics-run-abort-") as directory:
         output_dir = Path(directory)

@@ -45,6 +45,14 @@ DEFAULT_AMPLITUDES = (3, 5, 10)
 DEFAULT_HOLD_MS = 1000
 DEFAULT_DEADBAND_MDEG = 250
 DEFAULT_POLL_PERIOD_MS = 5
+CONDITIONING_AMPLITUDE_DEG = 5
+CONDITIONING_TRANSITION_MS = 1000
+CONDITIONING_HOLD_MS = DEFAULT_HOLD_MS
+CONDITIONING_SETTLE_MS = 2000
+CONDITIONING_MAX_VELOCITY_DEG_S = 8
+CONDITIONING_MAX_ACCELERATION_DEG_S2 = 30
+CONDITIONING_MIN_EXCURSION_COUNTS = 0.5 * CONDITIONING_AMPLITUDE_DEG * COUNTS_PER_DEG
+CONDITIONING_RETURN_TOLERANCE_COUNTS = 5.0
 ONSET_THRESHOLD_COUNTS = 3.0
 ONSET_COMMAND_THRESHOLD_COUNTS = 1.0
 SUSTAINED_ONSET_SAMPLES = 3
@@ -629,6 +637,138 @@ def _direction_asymmetry(metrics: list[dict]) -> list[dict]:
     return output
 
 
+def _conditioning_entry(args: argparse.Namespace, direction: str) -> dict:
+    """Build the optional directional center-preconditioning motion."""
+
+    if direction not in ("positive", "negative"):
+        raise ValueError("conditioning direction must be positive or negative")
+    sign = 1 if direction == "positive" else -1
+    return {
+        "tier": "conditioning",
+        "experiment": 5,
+        "trajectory": 2,
+        "joint": args.joint,
+        "amplitude_deg": sign * CONDITIONING_AMPLITUDE_DEG,
+        "transition_ms": CONDITIONING_TRANSITION_MS,
+        "hold_ms": CONDITIONING_HOLD_MS,
+        "duration_ms": CONDITIONING_TRANSITION_MS * 3 + CONDITIONING_HOLD_MS * 2,
+        "stagger_ms": 0,
+        "max_velocity_deg_s": CONDITIONING_MAX_VELOCITY_DEG_S,
+        "max_acceleration_deg_s2": CONDITIONING_MAX_ACCELERATION_DEG_S2,
+        "deadband_mdeg": args.deadband_mdeg,
+        "direction": direction,
+        "description": (
+            "center -> +5 -> -5 -> center"
+            if direction == "positive"
+            else "center -> -5 -> +5 -> center"
+        ),
+    }
+
+
+def _conditioning_metrics(
+    rows: list[dict[str, float]],
+    metadata: dict,
+    center_count: float,
+    settled_feedback_count: float | None,
+    settle_status: dict,
+) -> dict:
+    """Summarize conditioning separately from formal motion metrics."""
+
+    valid = _valid_feedback_rows(rows)
+    feedback_samples = _unique_feedback_samples(rows)
+    displacement = [row["fb_pos"] - center_count for row in valid]
+    age_values = [row["fb_age_ms"] for row in rows if row["fb_age_ms"] < 1_000_000_000]
+    target_counts = abs(float(metadata["amplitude_deg"])) * COUNTS_PER_DEG
+    feedback_rate = None
+    if len(feedback_samples) >= 2 and feedback_samples[-1][0] > feedback_samples[0][0]:
+        feedback_rate = (len(feedback_samples) - 1) / (
+            (feedback_samples[-1][0] - feedback_samples[0][0]) / 1000.0
+        )
+    return_error_counts = (
+        None if settled_feedback_count is None else settled_feedback_count - center_count
+    )
+    return {
+        "conditioning_direction": metadata["direction"],
+        "conditioning_amplitude_deg": abs(float(metadata["amplitude_deg"])),
+        "conditioning_target_counts": target_counts,
+        "conditioning_rows": len(rows),
+        "conditioning_valid_feedback_rows": len(valid),
+        "conditioning_feedback_valid_rate": len(valid) / len(rows) if rows else 0.0,
+        "conditioning_feedback_unique_samples": len(feedback_samples),
+        "conditioning_feedback_sample_rate_hz": feedback_rate,
+        "conditioning_feedback_age_p95_ms": _percentile(age_values, 0.95),
+        "conditioning_feedback_age_max_ms": max(age_values, default=None),
+        "conditioning_stale_rows": sum(1 for row in rows if row["stale"] != 0),
+        "conditioning_achieved_positive_counts": max(0.0, max(displacement, default=0.0)),
+        "conditioning_achieved_negative_counts": max(0.0, -min(displacement, default=0.0)),
+        "conditioning_achieved_positive_deg": max(0.0, max(displacement, default=0.0)) * DEG_PER_COUNT,
+        "conditioning_achieved_negative_deg": max(0.0, -min(displacement, default=0.0)) * DEG_PER_COUNT,
+        "conditioning_return_feedback_count": settled_feedback_count,
+        "conditioning_return_error_counts": return_error_counts,
+        "conditioning_return_error_deg": (
+            None if return_error_counts is None else return_error_counts * DEG_PER_COUNT
+        ),
+        "conditioning_voltage_min_v": min((row["voltage_v"] for row in rows), default=None),
+        "conditioning_voltage_max_v": max((row["voltage_v"] for row in rows), default=None),
+        "conditioning_raw_load_max": max((row["fb_load_raw"] for row in valid), default=None),
+        "conditioning_settle_status_parse_ok": bool(settle_status.get("parse_ok")),
+        "conditioning_settle_status_errors": settle_status.get("errors", []),
+        "conditioning_passed": False,
+        "conditioning_health_reasons": [],
+    }
+
+
+def _conditioning_health_reasons(summary: dict, args: argparse.Namespace) -> list[str]:
+    """Return fail-closed health reasons before a formal run may start."""
+
+    reasons: list[str] = []
+    if summary["conditioning_feedback_valid_rate"] < 0.80:
+        reasons.append("conditioning feedback valid rate below 80%")
+    if summary["conditioning_feedback_unique_samples"] < 2:
+        reasons.append("conditioning feedback has fewer than two advancing samples")
+    if summary["conditioning_stale_rows"] > 0:
+        reasons.append("conditioning stale feedback present")
+    age_p95 = summary["conditioning_feedback_age_p95_ms"]
+    if age_p95 is None:
+        reasons.append("conditioning feedback age is unavailable")
+    elif age_p95 > VALID_AGE_MAX_MS:
+        reasons.append(f"conditioning feedback age p95 exceeds {VALID_AGE_MAX_MS:g} ms")
+    for field in ("conditioning_voltage_min_v", "conditioning_voltage_max_v"):
+        value = summary[field]
+        if value is None:
+            reasons.append("conditioning servo voltage telemetry is unavailable")
+            break
+        if abs(value - VOLTAGE_BASELINE_V) > VOLTAGE_DEVIATION_MAX_V:
+            reasons.append(
+                "conditioning voltage differs from the observational ~8 V baseline; "
+                "this is not a validated electrical safety limit"
+            )
+            break
+    if summary["conditioning_achieved_positive_counts"] < CONDITIONING_MIN_EXCURSION_COUNTS:
+        reasons.append("conditioning positive excursion did not pass the breakaway health gate")
+    if summary["conditioning_achieved_negative_counts"] < CONDITIONING_MIN_EXCURSION_COUNTS:
+        reasons.append("conditioning negative excursion did not pass the breakaway health gate")
+    if not summary["conditioning_settle_status_parse_ok"]:
+        reasons.append("conditioning settle status missing or incomplete")
+    if summary["conditioning_settle_status_errors"]:
+        reasons.append("conditioning settle status reports a servo error or stale state")
+    return_error = summary["conditioning_return_error_counts"]
+    if return_error is None:
+        reasons.append("conditioning return position is unavailable")
+    elif abs(return_error) > CONDITIONING_RETURN_TOLERANCE_COUNTS:
+        reasons.append(
+            f"conditioning return error exceeds {CONDITIONING_RETURN_TOLERANCE_COUNTS:g} counts"
+        )
+    raw_load_max = summary["conditioning_raw_load_max"]
+    if raw_load_max is None:
+        reasons.append("conditioning raw load telemetry is unavailable")
+    elif raw_load_max > args.max_load_raw:
+        reasons.append(
+            "conditioning raw load exceeds the provisional observational anomaly gate"
+        )
+    return reasons
+
+
 def _write_normalized_csv(path: Path, runs: list[tuple[dict, list[dict[str, float]]]]) -> None:
     fields = (
         "run", "tier", "direction", "repetition", "ts_ms", "elapsed_ms", "fb_ts_ms", "fb_age_ms", "stale",
@@ -735,6 +875,14 @@ def _print_plan(args: argparse.Namespace, groups: list[dict], planned: list[dict
     print("  parameters: factory/current read-only; no EEPROM writes; runtime compensation disabled")
     print(f"  amplitudes: {args.amplitudes_deg}; directions: positive and negative; repetitions: {args.repetitions}")
     print(f"  hold: {DEFAULT_HOLD_MS} ms before return; selected feedback poll: {args.poll_period_ms} ms")
+    if args.precondition:
+        conditioning = _conditioning_entry(args, args.precondition)
+        print(
+            f"  conditioning: {conditioning['description']}; "
+            f"{CONDITIONING_SETTLE_MS} ms settle before formal run"
+        )
+    else:
+        print("  conditioning: disabled (cold/unconditioned protocol)")
     print(f"  planned movement captures: {len(planned)}")
     print(f"  execution limit: {args.max_runs} movement(s); first supervised run is the only default run")
     for group in groups:
@@ -774,6 +922,15 @@ def _initial_manifest(args: argparse.Namespace, planned: list[dict]) -> dict:
             "raw_speed_is_calibrated": False,
         },
         "preflight": {"captures": [], "decision": None},
+        "conditioning": {
+            "enabled": args.precondition is not None,
+            "direction": args.precondition,
+            "settle_ms": CONDITIONING_SETTLE_MS,
+            "formal_run_started": False,
+            "conditioning_passed": None,
+            "captures": [],
+            "metrics": None,
+        },
         "execution": {
             "max_runs": args.max_runs,
             "executed_runs": 0,
@@ -812,6 +969,7 @@ def _analyze_manifest(output_dir: Path, manifest_path: Path, *, max_load_raw: fl
         "joint_selection": manifest.get("joint_selection", {}),
         "safety_policy": manifest.get("safety_policy", {}),
         "preflight": manifest.get("preflight", {"captures": [], "decision": None}),
+        "conditioning": manifest.get("conditioning", {"enabled": False}),
         "runs": metrics,
         "feedback_jump_events": events,
         "direction_asymmetry": _direction_asymmetry(metrics),
@@ -865,6 +1023,86 @@ def _analyze_manifest(output_dir: Path, manifest_path: Path, *, max_load_raw: fl
     }
     _write_json(manifest_path, manifest)
     return report
+
+
+def _run_conditioning(args: argparse.Namespace, output_dir: Path, manifest: dict) -> dict:
+    """Run and gate the optional directional conditioning prelude."""
+
+    if not args.precondition:
+        return manifest.get("conditioning", {"enabled": False})
+    entry = _conditioning_entry(args, args.precondition)
+    command = _command_for(entry)
+    motion_name = "conditioning_motion.log"
+    settle_name = "conditioning_settle_status.log"
+    motion_path = _new_output(output_dir / motion_name)
+    settle_path = _new_output(output_dir / settle_name)
+    preflight_status = manifest["preflight"]["decision"]["status"]
+    center_record = next(
+        (record for record in preflight_status.get("records", []) if record["id"] == args.joint + 1),
+        None,
+    )
+    if center_record is None:
+        raise SafetyGateAbort("conditioning center feedback is unavailable after preflight")
+    center_count = float(center_record["fb_pos"])
+    metadata = {
+        **entry,
+        "run": "conditioning",
+        "log": motion_name,
+        "command": command,
+    }
+    print(
+        f"conditioning {entry['direction']}: {entry['description']}; "
+        f"{command} (physical motion; supervise the arm)",
+        flush=True,
+    )
+    _capture_command(args.port, command, motion_path, int(entry["duration_ms"]))
+
+    # Settling is an explicit wall-clock observation after the reversal sweep.
+    # No command is sent during this interval; the subsequent status query is
+    # kept separate from the conditioning telemetry capture.
+    time.sleep(CONDITIONING_SETTLE_MS / 1000.0)
+    _capture_command(args.port, "mlab status", settle_path, 500, tail_s=0.5)
+    settle_status = _parse_status_capture(settle_path)
+    settle_record = next(
+        (record for record in settle_status.get("records", []) if record["id"] == args.joint + 1),
+        None,
+    )
+    settled_feedback_count = None if settle_record is None else float(settle_record["fb_pos"])
+    summary = _conditioning_metrics(
+        _raw_rows(motion_path, args.joint),
+        metadata,
+        center_count,
+        settled_feedback_count,
+        settle_status,
+    )
+    reasons = _conditioning_health_reasons(summary, args)
+    summary["conditioning_health_reasons"] = reasons
+    summary["conditioning_passed"] = not reasons
+    return {
+        "enabled": True,
+        "direction": entry["direction"],
+        "description": entry["description"],
+        "settle_ms": CONDITIONING_SETTLE_MS,
+        "formal_run_started": False,
+        "conditioning_passed": summary["conditioning_passed"],
+        "captures": [
+            {
+                "name": motion_name,
+                "command": command,
+                "duration_ms": entry["duration_ms"],
+                "log": motion_name,
+                "sha256": _sha256(motion_path),
+            },
+            {
+                "name": settle_name,
+                "command": "mlab status",
+                "duration_ms": 500,
+                "log": settle_name,
+                "sha256": _sha256(settle_path),
+            },
+        ],
+        "metrics": summary,
+    }
 
 
 def _run_hardware(args: argparse.Namespace, output_dir: Path, manifest: dict, groups: list[dict]) -> None:
@@ -922,6 +1160,62 @@ def _run_hardware(args: argparse.Namespace, output_dir: Path, manifest: dict, gr
             manifest["execution"]["stop_reason"] = "preflight_gate"
             _write_json(output_dir / "manifest.json", manifest)
             raise SafetyGateAbort("preflight gate failed: " + "; ".join(decision["reasons"]))
+        if args.precondition:
+            try:
+                conditioning = _run_conditioning(args, output_dir, manifest)
+            except SafetyGateAbort as error:
+                # A missing center snapshot or an equivalent conditioning
+                # prelude failure is itself a failed health gate. Persist that
+                # decision so the report is explicit and never looks like a
+                # generic user abort.
+                conditioning = {
+                    **manifest.get("conditioning", {}),
+                    "enabled": True,
+                    "direction": args.precondition,
+                    "conditioning_passed": False,
+                    "formal_run_started": False,
+                    "metrics": {
+                        "conditioning_passed": False,
+                        "conditioning_health_reasons": [str(error)],
+                    },
+                }
+                manifest["conditioning"] = conditioning
+                manifest["status"] = "conditioning_failed"
+                manifest["execution"]["stop_reason"] = "conditioning_gate"
+                _write_json(output_dir / "manifest.json", manifest)
+                raise
+            except Exception as error:
+                # Serial/capture failures are also fail-closed. No formal
+                # movement may begin after an incomplete conditioning prelude.
+                conditioning = {
+                    **manifest.get("conditioning", {}),
+                    "enabled": True,
+                    "direction": args.precondition,
+                    "conditioning_passed": False,
+                    "formal_run_started": False,
+                    "metrics": {
+                        "conditioning_passed": False,
+                        "conditioning_health_reasons": [
+                            f"conditioning capture failed: {error}"
+                        ],
+                    },
+                }
+                manifest["conditioning"] = conditioning
+                manifest["status"] = "conditioning_failed"
+                manifest["execution"]["stop_reason"] = "conditioning_capture"
+                _write_json(output_dir / "manifest.json", manifest)
+                raise SafetyGateAbort(f"conditioning capture failed: {error}") from error
+            manifest["conditioning"] = conditioning
+            _write_json(output_dir / "manifest.json", manifest)
+            if not conditioning["conditioning_passed"]:
+                manifest["status"] = "conditioning_failed"
+                manifest["execution"]["stop_reason"] = "conditioning_gate"
+                _write_json(output_dir / "manifest.json", manifest)
+                raise SafetyGateAbort(
+                    "conditioning health gate failed: "
+                    + "; ".join(conditioning["metrics"]["conditioning_health_reasons"])
+                )
+            manifest["conditioning"]["formal_run_started"] = True
         manifest["status"] = "running"
         manifest["execution"]["stop_reason"] = "running"
         _write_json(output_dir / "manifest.json", manifest)
@@ -956,7 +1250,7 @@ def _run_hardware(args: argparse.Namespace, output_dir: Path, manifest: dict, gr
         print(f"execution limit reached after {executed_runs} movement(s); returning control", flush=True)
         manifest["status"] = "complete"
     except (KeyboardInterrupt, SafetyGateAbort):
-        if manifest.get("status") != "preflight_failed":
+        if manifest.get("status") not in ("preflight_failed", "conditioning_failed"):
             manifest["status"] = "aborted"
         raise
     finally:
@@ -996,6 +1290,14 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reversal-amplitude-deg", type=int, default=3)
     parser.add_argument("--poll-period-ms", type=int, default=DEFAULT_POLL_PERIOD_MS)
     parser.add_argument("--deadband-mdeg", type=int, default=DEFAULT_DEADBAND_MDEG)
+    parser.add_argument(
+        "--precondition",
+        choices=("positive", "negative"),
+        help=(
+            "optionally run a directional center -> +/-5 -> -/+5 -> center "
+            "health motion before formal measurements; disabled by default"
+        ),
+    )
     parser.add_argument("--max-load-raw", type=float, default=3000.0)
     parser.add_argument("--skip-low-speed", action="store_true")
     parser.add_argument("--skip-reversal", action="store_true")
@@ -1064,7 +1366,7 @@ def main() -> int:
         print("ABORTED: user interrupt", file=sys.stderr)
         exit_code = 130
     finally:
-        if manifest.get("runs"):
+        if manifest.get("runs") or manifest.get("conditioning", {}).get("enabled"):
             report = _analyze_manifest(output_dir, manifest_path, max_load_raw=args.max_load_raw)
             print(json.dumps(report["summary"], indent=2))
             print(f"report: {output_dir / 'dynamics_report.json'}")
