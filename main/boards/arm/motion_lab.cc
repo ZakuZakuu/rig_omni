@@ -94,6 +94,29 @@ float step_hold_return(uint32_t elapsed_ms, uint32_t transition_ms, uint32_t hol
     return 1.0f - easing(static_cast<float>(return_elapsed_ms) / transition_ms, trajectory);
 }
 
+float reversal_sweep(uint32_t elapsed_ms, uint32_t transition_ms, uint32_t hold_ms,
+                     MotionLabTrajectory trajectory) {
+    if (transition_ms == 0) return 0.0f;
+    const uint32_t first_hold_end = transition_ms + hold_ms;
+    const uint32_t reverse_end = first_hold_end + transition_ms;
+    const uint32_t second_hold_end = reverse_end + hold_ms;
+    const uint32_t finish = second_hold_end + transition_ms;
+    if (elapsed_ms < transition_ms) {
+        return easing(static_cast<float>(elapsed_ms) / transition_ms, trajectory);
+    }
+    if (elapsed_ms < first_hold_end) return 1.0f;
+    if (elapsed_ms < reverse_end) {
+        return 1.0f - 2.0f * easing(
+            static_cast<float>(elapsed_ms - first_hold_end) / transition_ms, trajectory);
+    }
+    if (elapsed_ms < second_hold_end) return -1.0f;
+    if (elapsed_ms < finish) {
+        return -1.0f + easing(
+            static_cast<float>(elapsed_ms - second_hold_end) / transition_ms, trajectory);
+    }
+    return 0.0f;
+}
+
 bool has_safe_targets(const MotionLabConfig& config,
                       const int16_t feedback_pos[MOTION_LAB_JOINTS]) {
     for (int i = 0; i < MOTION_LAB_JOINTS; ++i) {
@@ -101,17 +124,22 @@ bool has_safe_targets(const MotionLabConfig& config,
         const bool moves = config.experiment == kMotionLabSynchronizedSweep ||
                            config.experiment == kMotionLabStaggeredSweep ||
                            ((config.experiment == kMotionLabSingleJointSweep ||
-                             config.experiment == kMotionLabStepHoldReturn) &&
+                             config.experiment == kMotionLabStepHoldReturn ||
+                             config.experiment == kMotionLabReversalSweep) &&
                             i == config.joint_index);
         if (!moves) continue;
         const int target = feedback_pos[i] + static_cast<int>(config.amplitude_deg * kCountsPerDeg);
         if (target < kExperimentMinCount || target > kExperimentMaxCount) return false;
+        if (config.experiment == kMotionLabReversalSweep) {
+            const int opposite_target = feedback_pos[i] - static_cast<int>(config.amplitude_deg * kCountsPerDeg);
+            if (opposite_target < kExperimentMinCount || opposite_target > kExperimentMaxCount) return false;
+        }
     }
     return true;
 }
 
 bool valid_config(const MotionLabConfig& config) {
-    if (config.experiment < kMotionLabSingleJointSweep || config.experiment > kMotionLabStepHoldReturn ||
+    if (config.experiment < kMotionLabSingleJointSweep || config.experiment > kMotionLabReversalSweep ||
         config.trajectory < kMotionLabLinear || config.trajectory > kMotionLabMinimumJerk ||
         config.joint_index >= MOTION_LAB_JOINTS || config.duration_ms < 500 || config.duration_ms > 30000 ||
         config.hold_ms > 10000 || config.stagger_ms > 2000 || config.max_velocity_deg_s <= 0.0f ||
@@ -127,6 +155,9 @@ bool valid_config(const MotionLabConfig& config) {
 uint32_t total_duration_ms() {
     if (state.config.experiment == kMotionLabStepHoldReturn) {
         return state.config.duration_ms * 2 + state.config.hold_ms;
+    }
+    if (state.config.experiment == kMotionLabReversalSweep) {
+        return state.config.duration_ms * 3 + state.config.hold_ms * 2;
     }
     if (state.config.experiment != kMotionLabStaggeredSweep) return state.config.duration_ms;
     return state.config.duration_ms + state.config.stagger_ms * (MOTION_LAB_JOINTS - 1);
@@ -203,7 +234,8 @@ void motion_lab_update(uint32_t now_us) {
             bool moves = state.config.experiment == kMotionLabSynchronizedSweep ||
                          state.config.experiment == kMotionLabStaggeredSweep ||
                          ((state.config.experiment == kMotionLabSingleJointSweep ||
-                           state.config.experiment == kMotionLabStepHoldReturn) &&
+                           state.config.experiment == kMotionLabStepHoldReturn ||
+                           state.config.experiment == kMotionLabReversalSweep) &&
                           i == state.config.joint_index);
             if (moves) {
                 uint32_t local_ms = elapsed_ms;
@@ -213,6 +245,9 @@ void motion_lab_update(uint32_t now_us) {
                 }
                 if (state.config.experiment == kMotionLabStepHoldReturn) {
                     desired += state.config.amplitude_deg * step_hold_return(
+                        local_ms, state.config.duration_ms, state.config.hold_ms, state.config.trajectory);
+                } else if (state.config.experiment == kMotionLabReversalSweep) {
+                    desired += state.config.amplitude_deg * reversal_sweep(
                         local_ms, state.config.duration_ms, state.config.hold_ms, state.config.trajectory);
                 } else {
                     desired += state.config.amplitude_deg * out_and_back(

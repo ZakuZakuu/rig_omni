@@ -76,12 +76,12 @@ default, and `mlab visible` is the recommended visible test.
 
 | Field | Meaning | Safe initial value |
 | --- | --- | --- |
-| `experiment` | `0` single joint, `1` synchronized five-joint, `2` staggered five-joint, `3` hold, `4` step-hold-return | `0` |
+| `experiment` | `0` single joint, `1` synchronized five-joint, `2` staggered five-joint, `3` hold, `4` step-hold-return, `5` reversal lost-motion proxy | `0` |
 | `trajectory` | `0` linear, `1` cubic ease, `2` minimum-jerk | `2` |
 | `joint` | zero-based joint for experiment `0` | `0` |
 | `amplitude_deg` | positive direct-joint offset; must be `0` for hold | `3` |
 | `duration_ms` | complete out-and-back time, or hold time | `2000` |
-| `hold_ms` | peak hold time for experiment `4` | `1000` |
+| `hold_ms` | peak hold time for experiment `4` or each endpoint of experiment `5` | `1000` |
 | `stagger_ms` | start delay between joints for experiment `2` | `120` |
 | `max_velocity_deg_s` | trajectory output velocity limit | `45` |
 | `max_acceleration_deg_s2` | trajectory output acceleration limit | `180` |
@@ -123,3 +123,58 @@ python3 tools/motion_lab/test_trajectory.py
 
 This verifies endpoint and monotonic properties of linear, cubic-ease, and minimum-jerk
 curves. Firmware build validation remains `idf.py build`.
+
+## Usable dynamics characterization (PR #6)
+
+The reusable supervised harness is
+`tools/motion_lab/characterize_dynamics.py`. It reuses the raw capture and
+telemetry contract above; it does not write servo registers or change the
+simulation/Ruckig defaults. The default invocation is manifest-only and never
+opens a serial port:
+
+```bash
+python3 tools/motion_lab/characterize_dynamics.py \
+  --manifest-only \
+  --output-dir backups/motion-lab-dynamics-YYYY-MM-DD \
+  --joint 2
+```
+
+J2 is the documented first representative joint: it is a visible forearm-pitch
+axis, the validated neutral pose is away from its model limits, and this choice
+does not assume that the earlier J0 stutter is the whole-arm limit. The harness
+plans 3/5/10 degree positive and negative minimum-jerk step/hold/return runs,
+progressive gentle/moderate/brisk/expressive tiers, three repetitions, selected
+joint high-rate feedback, low-speed probes, and a separate experiment-5
+reversal lost-motion proxy. It prints the exact first command before any
+hardware action.
+
+Only a human-supervised invocation may move the arm:
+
+```bash
+python3 tools/motion_lab/characterize_dynamics.py \
+  --execute --confirm-hardware --port "$RIG_PORT" \
+  --output-dir backups/motion-lab-dynamics-YYYY-MM-DD \
+  --joint 2
+```
+
+The first planned movement is a small J2 `+3` degree endpoint using
+`mlab run 4 2 2 3 3000 0 8 30 250`, followed by a one-second hold and a
+return. The harness stops before the next tier if stale feedback, age,
+voltage, load, or tracking gates fail. Raw UART files are immutable and are
+hashed in `manifest.json`; derived `normalized.csv` and `dynamics_report.json`
+retain the firmware SHA and experiment parameters. `fb_speed_raw` is reported
+as a raw servo value, not converted into calibrated angular velocity.
+
+To analyze a prior capture directory without touching hardware:
+
+```bash
+python3 tools/motion_lab/characterize_dynamics.py \
+  --analyze-only --output-dir backups/motion-lab-dynamics-YYYY-MM-DD
+```
+
+The dedicated reversal experiment executes center → signed endpoint → opposite
+endpoint → center. Its command travel before sustained opposite feedback is a
+lost-motion proxy that includes servo deadband, quantization, bus delay, and
+control behavior; it is not a claim of pure gear backlash. Cleanup always sends
+`mlab stop`, `mlab poll off`, and `mlab comp off` so normal Motion Lab ownership
+and polling are restored after a run or user abort.

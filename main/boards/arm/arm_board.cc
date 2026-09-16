@@ -81,7 +81,7 @@ void PrintMotionLabConsoleHelp() {
     printf("MLAB_CONSOLE commands:\r\n"
            "  mlab hold\r\n"
            "  mlab visible [joint 0..4]  (10 deg, 1.5 s out, 1 s hold, 1.5 s back)\r\n"
-           "  mlab run <experiment 0..2 or 4> <trajectory 0..2> <joint 0..4> <amplitude_deg -10..-1 or 1..10> "
+           "  mlab run <experiment 0..2 or 4..5> <trajectory 0..2> <joint 0..4> <amplitude_deg -10..-1 or 1..10> "
            "<duration_ms 500..30000> <stagger_ms 0..2000> <max_velocity_deg_s 1..90> "
            "<max_acceleration_deg_s2 1..500> <deadband_mdeg 0..2000>\r\n"
            "  mlab poll <joint 0..4> <period_ms 5..100>  (selected-joint high-rate feedback)\r\n"
@@ -677,11 +677,12 @@ private:
 
         mcp_server.AddTool("self.arm.motion_lab.run",
             "运行受控 Motion Lab 实验。experiment: 0=单关节往返, 1=五关节同步往返, "
-            "2=五关节错峰往返, 3=固定姿态保持, 4=单关节推出-保持-返回。"
+            "2=五关节错峰往返, 3=固定姿态保持, 4=单关节推出-保持-返回, "
+            "5=单关节正负反转丢失行程代理。"
             "trajectory: 0=线性, 1=三次缓动, 2=最小加加速度。"
             "实验会暂时隔离空闲微动和预设动作，振幅限制在 10 度以内，并以 MLAB CSV 行输出遥测。",
             PropertyList({
-                Property("experiment", kPropertyTypeInteger, 0, 0, 4),
+                Property("experiment", kPropertyTypeInteger, 0, 0, 5),
                 Property("trajectory", kPropertyTypeInteger, 2, 0, 2),
                 Property("joint", kPropertyTypeInteger, 0, 0, 4),
                 Property("amplitude_deg", kPropertyTypeInteger, 3, 0, 10),
