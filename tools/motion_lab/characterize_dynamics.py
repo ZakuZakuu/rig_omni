@@ -733,6 +733,8 @@ def main() -> int:
     if unknown_tiers:
         parser.error(f"unknown tier(s): {', '.join(sorted(unknown_tiers))}")
     groups, planned = _build_plan(args)
+    if not planned:
+        parser.error("the plan contains no movement captures; select at least one tier or probe")
     output_dir = args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = output_dir / "manifest.json"
@@ -743,6 +745,8 @@ def main() -> int:
         print(json.dumps(report["summary"], indent=2))
         print(f"report: {output_dir / 'dynamics_report.json'}")
         return 0
+    if manifest_path.exists():
+        parser.error(f"refusing to overwrite existing manifest: {manifest_path}; choose a new output directory or use --analyze-only")
     manifest = _initial_manifest(args, planned)
     _print_plan(args, groups, planned)
     _write_json(manifest_path, manifest)
