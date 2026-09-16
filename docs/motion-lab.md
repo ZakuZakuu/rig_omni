@@ -28,13 +28,36 @@ refresh CMake once, then build from `firmware/`:
 idf.py reconfigure && idf.py build
 ```
 
-Because a full flash takes longer than the Codex terminal allowance, use an interactive
-WSL terminal to flash and monitor:
+After the build succeeds, flash the same image and keep the ESP-IDF monitor open
+for the boot/readiness check. A host checkout or build log alone does not prove
+which image is running on the device:
 
 ```bash
 rig_env
 idf.py -p "$RIG_PORT" flash monitor
 ```
+
+Wait for the boot banner and `MLAB_CONSOLE ready`, then query the read-only
+capability contract before any experiment:
+
+```text
+mlab caps
+mlab help
+mlab status
+```
+
+`mlab caps` reports the capability protocol, supported experiment IDs, reversal
+support, and the running image identity (project/version/build timestamp/ELF
+SHA). Experiment 5 and reversal must be advertised before a conditioned
+characterization run. If the response is missing, malformed, stale, or does
+not advertise the required experiment, stop and flash/verify the intended
+image; do not send `mlab run`.
+
+Only after those read-only checks should you exit the monitor and run an
+automated capture helper. Never run `idf.py monitor` and
+`tools/motion_lab/capture_serial.py` against the same port at the same time.
+The helper only sends the command and captures UART; it does not flash firmware
+and its output is not evidence that the intended image is installed.
 
 ## Local serial console (recommended)
 
@@ -45,6 +68,7 @@ browser connection.
 
 ```text
 mlab help
+mlab caps
 mlab hold
 mlab visible [joint]
 mlab run <experiment> <trajectory> <joint> <amplitude_deg> <duration_ms> <stagger_ms> <max_velocity_deg_s> <max_acceleration_deg_s2> <deadband_mdeg>
@@ -181,6 +205,15 @@ immutable and are hashed in `manifest.json`; derived `normalized.csv` and
 Voltage is compared with the observed ~8 V device baseline, not presented as a
 validated electrical safety range. Raw load and speed values remain
 observational diagnostics, not calibrated physical limits.
+
+Before that preflight, the harness sends `mlab caps` and records the running
+device identity separately from the host Git commit. A conditioned run requires
+capability protocol 2, experiment 5, and reversal support; a cold formal run
+requires experiment 4. Missing/malformed capabilities or a capability mismatch
+are deployment/readiness failures and no physical `mlab run` is sent. If a
+device replies `invalid config` and emits no `MLAB` telemetry, the manifest
+records `physical_motion_started=false` and classifies the result as deployment
+failure rather than actuator evidence.
 
 To analyze a prior capture directory without touching hardware:
 

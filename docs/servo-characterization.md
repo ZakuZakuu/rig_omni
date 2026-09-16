@@ -4,6 +4,33 @@ This phase starts only after the Motion Lab baseline. Its first firmware build
 improves measurement freshness and adds a read-only SCS009 parameter snapshot;
 it does not change servo EEPROM values or add an external PID loop.
 
+## Deployment/readiness gate
+
+The host checkout and the image actually running on the ESP32 are separate
+evidence sources. After a firmware change, use `rig_env`, run
+`idf.py reconfigure` and `idf.py build`, then `idf.py -p "$RIG_PORT" flash monitor`.
+Wait for `MLAB_CONSOLE ready`, query `mlab caps`, `mlab help`, and `mlab status`,
+then exit the monitor before starting an automated capture. The capability
+response records the device image identity and must advertise the experiment
+required by the selected protocol (experiment 5 plus reversal for conditioning).
+`capture_serial.py` is a capture/command helper only; it never flashes and its
+success cannot prove deployment.
+
+Keep these failure classes separate in manifests and reports:
+
+- **Deployment failure** — wrong or stale image, missing/malformed capability,
+  unsupported experiment, or an `invalid config` response before any telemetry.
+- **Preflight failure** — status, voltage, or read-only parameter snapshot fails
+  before motion.
+- **Conditioning failure** — the conditioning motion started, but its feedback,
+  load, return, or health gates failed.
+- **Formal failure** — a formal motion started and then failed tracking or
+  safety checks.
+
+An invalid configuration with no `MLAB` rows is not evidence of servo travel;
+it must be recorded with `physical_motion_started=false` and the host must stop
+without automatically trying another movement.
+
 ## Feedback contract
 
 The servo bus is polled by `xgo_feedback_poll`, not by the 2 ms command loop.

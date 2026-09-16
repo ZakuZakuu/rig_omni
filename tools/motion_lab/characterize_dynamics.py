@@ -45,6 +45,7 @@ DEFAULT_AMPLITUDES = (3, 5, 10)
 DEFAULT_HOLD_MS = 1000
 DEFAULT_DEADBAND_MDEG = 250
 DEFAULT_POLL_PERIOD_MS = 5
+MOTION_LAB_CAPABILITY_PROTOCOL = 2
 CONDITIONING_AMPLITUDE_DEG = 5
 CONDITIONING_TRANSITION_MS = 1000
 CONDITIONING_HOLD_MS = DEFAULT_HOLD_MS
@@ -89,6 +90,10 @@ DEFAULT_TIERS = (
 
 class SafetyGateAbort(RuntimeError):
     """Raised when a run invalidates the progressive matrix."""
+
+
+class DeploymentGateAbort(SafetyGateAbort):
+    """Raised when the running device image is not ready for this protocol."""
 
 
 def _tracking_error_guard(amplitude_deg: float) -> float:
@@ -143,6 +148,72 @@ def _sha256(path: Path) -> str:
 
 def _read_capture_text(path: Path) -> str:
     return path.read_text(errors="replace")
+
+
+def _parse_caps_capture(path: Path, *, required_experiment: int = 5) -> dict:
+    """Parse the read-only device capability/identity response."""
+
+    lines = [
+        line.strip()
+        for line in _read_capture_text(path).splitlines()
+        if line.strip().startswith("MLAB_CAPS,")
+    ]
+    reasons: list[str] = []
+    fields: dict[str, str] = {}
+    if len(lines) != 1:
+        reasons.append("capability response missing or not unique")
+    elif lines[0].count("MLAB_CAPS,") != 1:
+        reasons.append("capability response has an invalid prefix")
+    else:
+        for field in lines[0].split(",")[1:]:
+            if "=" not in field:
+                reasons.append(f"malformed capability field: {field!r}")
+                continue
+            key, value = field.split("=", 1)
+            if not key or key in fields:
+                reasons.append(f"duplicate or empty capability key: {key!r}")
+            fields[key] = value
+
+    protocol: int | None = None
+    experiments: list[int] = []
+    reversal_supported = False
+    try:
+        protocol = int(fields["protocol"])
+    except (KeyError, ValueError):
+        reasons.append("capability protocol is missing or malformed")
+    try:
+        experiments = [int(value) for value in fields["experiments"].split("|") if value]
+    except (KeyError, ValueError):
+        reasons.append("supported experiment list is missing or malformed")
+    try:
+        reversal_supported = int(fields["reversal"]) == 1
+    except (KeyError, ValueError):
+        reasons.append("reversal capability flag is missing or malformed")
+
+    if protocol != MOTION_LAB_CAPABILITY_PROTOCOL:
+        reasons.append(
+            f"unsupported capability protocol {protocol!r}; expected {MOTION_LAB_CAPABILITY_PROTOCOL}"
+        )
+    if required_experiment not in experiments:
+        reasons.append(f"device does not advertise experiment {required_experiment}")
+    if required_experiment == 5 and not reversal_supported:
+        reasons.append("device does not advertise reversal experiment 5")
+    device_identity = {
+        key: value
+        for key, value in fields.items()
+        if key not in {"protocol", "experiments", "reversal"}
+    }
+    return {
+        "response": lines[0] if len(lines) == 1 else None,
+        "protocol": protocol,
+        "experiments": experiments,
+        "reversal_supported": reversal_supported,
+        "required_experiment": required_experiment,
+        "device_identity": device_identity,
+        "parse_ok": not reasons,
+        "passed": not reasons,
+        "reasons": reasons,
+    }
 
 
 def _parse_status_capture(path: Path) -> dict:
@@ -942,11 +1013,20 @@ def _initial_manifest(args: argparse.Namespace, planned: list[dict]) -> dict:
             "velocity_estimator": "20ms linear resample + centered local quadratic fit",
             "raw_speed_is_calibrated": False,
         },
+        "deployment": {
+            "enabled": True,
+            "required_capability_protocol": MOTION_LAB_CAPABILITY_PROTOCOL,
+            "required_experiment": 5 if args.precondition else 4,
+            "captures": [],
+            "decision": None,
+            "device_identity": None,
+        },
         "preflight": {"captures": [], "decision": None},
         "conditioning": {
             "enabled": args.precondition is not None,
             "direction": args.precondition,
             "settle_ms": CONDITIONING_SETTLE_MS,
+            "physical_motion_started": False,
             "formal_run_started": False,
             "conditioning_passed": None,
             "captures": [],
@@ -990,6 +1070,7 @@ def _analyze_manifest(output_dir: Path, manifest_path: Path, *, max_load_raw: fl
         "firmware": manifest.get("firmware", {}),
         "joint_selection": manifest.get("joint_selection", {}),
         "safety_policy": manifest.get("safety_policy", {}),
+        "deployment": manifest.get("deployment", {"enabled": False}),
         "preflight": manifest.get("preflight", {"captures": [], "decision": None}),
         "conditioning": manifest.get("conditioning", {"enabled": False}),
         "execution": manifest.get("execution", {}),
@@ -1091,6 +1172,14 @@ def _run_conditioning(args: argparse.Namespace, output_dir: Path, manifest: dict
         None,
     )
     settled_feedback_count = None if settle_record is None else float(settle_record["fb_pos"])
+    motion_text = _read_capture_text(motion_path)
+    if "MLAB_CONSOLE run: invalid config" in motion_text and not any(
+        line.startswith("MLAB,") for line in motion_text.splitlines()
+    ):
+        raise DeploymentGateAbort(
+            "device rejected experiment 5 before motion telemetry; "
+            "build/flash/verify the intended firmware and readiness state"
+        )
     summary = _conditioning_metrics(
         _raw_rows(motion_path, args.joint),
         metadata,
@@ -1106,6 +1195,7 @@ def _run_conditioning(args: argparse.Namespace, output_dir: Path, manifest: dict
         "direction": entry["direction"],
         "description": entry["description"],
         "settle_ms": CONDITIONING_SETTLE_MS,
+        "physical_motion_started": True,
         "formal_run_started": False,
         "conditioning_passed": summary["conditioning_passed"],
         "captures": [
@@ -1136,6 +1226,49 @@ def _run_hardware(args: argparse.Namespace, output_dir: Path, manifest: dict, gr
     output_dir.mkdir(parents=True, exist_ok=True)
     executed_runs = 0
     try:
+        # Verify the image running on the device before any preflight or
+        # physical command. Host Git identity is recorded separately from this
+        # device-reported capability/image identity.
+        deployment = manifest["deployment"]
+        caps_name = "deployment_caps.log"
+        caps_path = _new_output(output_dir / caps_name)
+        try:
+            _capture_command(args.port, "mlab caps", caps_path, 500, tail_s=0.5)
+        except Exception as error:
+            deployment["captures"] = []
+            deployment["decision"] = {
+                "passed": False,
+                "reasons": [f"capability query failed: {error}"],
+            }
+            deployment["device_identity"] = None
+            manifest["status"] = "deployment_failed"
+            manifest["execution"]["stop_reason"] = "deployment_capability"
+            _write_json(output_dir / "manifest.json", manifest)
+            raise DeploymentGateAbort(
+                "device capability query failed; build/flash/verify the intended firmware"
+            ) from error
+        capability = _parse_caps_capture(
+            caps_path, required_experiment=deployment["required_experiment"]
+        )
+        deployment["captures"] = [{
+            "name": caps_name,
+            "command": "mlab caps",
+            "duration_ms": 500,
+            "log": caps_name,
+            "sha256": _sha256(caps_path),
+        }]
+        deployment["decision"] = capability
+        deployment["device_identity"] = capability.get("device_identity")
+        _write_json(output_dir / "manifest.json", manifest)
+        if not capability["passed"]:
+            manifest["status"] = "deployment_failed"
+            manifest["execution"]["stop_reason"] = "deployment_capability"
+            _write_json(output_dir / "manifest.json", manifest)
+            raise DeploymentGateAbort(
+                "device firmware capability mismatch; build/flash/verify the intended firmware "
+                + "; ".join(capability["reasons"])
+            )
+
         # Establish factory-like runtime context and preserve read-only identity
         # captures before the first movement.
         preflight = []
@@ -1186,6 +1319,15 @@ def _run_hardware(args: argparse.Namespace, output_dir: Path, manifest: dict, gr
         if args.precondition:
             try:
                 conditioning = _run_conditioning(args, output_dir, manifest)
+            except DeploymentGateAbort as error:
+                manifest["deployment"]["run_rejection"] = {
+                    "physical_motion_started": False,
+                    "reason": str(error),
+                }
+                manifest["status"] = "deployment_failed"
+                manifest["execution"]["stop_reason"] = "deployment_readiness"
+                _write_json(output_dir / "manifest.json", manifest)
+                raise
             except SafetyGateAbort as error:
                 # A missing center snapshot or an equivalent conditioning
                 # prelude failure is itself a failed health gate. Persist that
@@ -1284,7 +1426,9 @@ def _run_hardware(args: argparse.Namespace, output_dir: Path, manifest: dict, gr
         print(f"execution limit reached after {executed_runs} movement(s); returning control", flush=True)
         manifest["status"] = "complete"
     except (KeyboardInterrupt, SafetyGateAbort):
-        if manifest.get("status") not in ("preflight_failed", "conditioning_failed"):
+        if manifest.get("status") not in (
+            "deployment_failed", "preflight_failed", "conditioning_failed"
+        ):
             manifest["status"] = "aborted"
         raise
     finally:
@@ -1412,7 +1556,11 @@ def main() -> int:
         print("ABORTED: user interrupt", file=sys.stderr)
         exit_code = 130
     finally:
-        if manifest.get("runs") or manifest.get("conditioning", {}).get("enabled"):
+        if (
+            manifest.get("runs")
+            or manifest.get("conditioning", {}).get("enabled")
+            or manifest.get("deployment", {}).get("enabled")
+        ):
             report = _analyze_manifest(output_dir, manifest_path, max_load_raw=args.max_load_raw)
             print(json.dumps(report["summary"], indent=2))
             print(f"report: {output_dir / 'dynamics_report.json'}")

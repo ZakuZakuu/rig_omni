@@ -27,6 +27,7 @@
 #include <nvs_flash.h>
 #include <esp_flash.h>
 #include <esp_random.h>
+#include <esp_app_desc.h>
 
 #include <stdio.h>
 #include <string.h>
@@ -81,6 +82,7 @@ void PrintMotionLabConsoleHelp() {
     printf("MLAB_CONSOLE commands:\r\n"
            "  mlab hold\r\n"
            "  mlab visible [joint 0..4]  (10 deg, 1.5 s out, 1 s hold, 1.5 s back)\r\n"
+           "  mlab caps      (read-only device protocol/capability/image identity)\r\n"
            "  mlab run <experiment 0..2 or 4..5> <trajectory 0..2> <joint 0..4> <amplitude_deg -10..-1 or 1..10> "
            "<duration_ms 500..30000> <stagger_ms 0..2000> <max_velocity_deg_s 1..90> "
            "<max_acceleration_deg_s2 1..500> <deadband_mdeg 0..2000>\r\n"
@@ -103,6 +105,24 @@ void PrintMotionLabConsoleHelp() {
            "  mlab params  (read-only SCS009 factory/control snapshot)\r\n"
            "  mlab stop\r\n"
            "  mlab help\r\n");
+}
+
+void PrintMotionLabCapabilities() {
+    const esp_app_desc_t* app_desc = esp_app_get_description();
+    if (app_desc == nullptr) {
+        printf("MLAB_CAPS,protocol=2,experiments=0|1|2|3|4|5,reversal=1,image_identity=unavailable\r\n");
+        return;
+    }
+
+    char elf_sha256[sizeof(app_desc->app_elf_sha256) * 2 + 1] = {};
+    for (size_t i = 0; i < sizeof(app_desc->app_elf_sha256); ++i) {
+        snprintf(elf_sha256 + i * 2, sizeof(elf_sha256) - i * 2, "%02x",
+                 app_desc->app_elf_sha256[i]);
+    }
+    printf("MLAB_CAPS,protocol=2,experiments=0|1|2|3|4|5,reversal=1,"
+           "project=%s,version=%s,build_date=%s,build_time=%s,elf_sha256=%s\r\n",
+           app_desc->project_name, app_desc->version, app_desc->date,
+           app_desc->time, elf_sha256);
 }
 
 }  // namespace
@@ -1144,6 +1164,10 @@ public:
 
                 if (strcmp(line, "mlab help") == 0) {
                     PrintMotionLabConsoleHelp();
+                    continue;
+                }
+                if (strcmp(line, "mlab caps") == 0) {
+                    PrintMotionLabCapabilities();
                     continue;
                 }
                 if (strcmp(line, "mlab hold") == 0) {

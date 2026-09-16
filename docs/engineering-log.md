@@ -587,3 +587,26 @@ confirmed joint 0 P/D/I=`0F/0F/00`, startup=`0x0018`, dead zones=`0x01/0x01`,
 and `MLAB_COMP enabled=0`. v0.2 therefore closes as hardware-dominated with
 the factory profile retained; no candidate is promoted and the next milestone
 is Creature Motion rather than more low-level actuator tuning.
+
+## 2026-09-16 — Deployment contract before conditioned characterization
+
+The immutable cold J2 `+3°` evidence remains the first hardware record: r1
+commanded 10 counts (2.9297°) and achieved 7 counts (2.0508°), while r2
+commanded the same 10 counts and achieved 0 counts. Those runs were collected
+with firmware that already supported experiment 4, and remain valid cold-run
+evidence; they are not a repeatability claim.
+
+The first conditioning-only attempt was saved under
+`backups/motion-lab-conditioning-only-2026-09-16-positive-c0`. The host checkout
+contained experiment-5 code, but the device was not redeployed: after the
+preflight, the device returned `MLAB_CONSOLE run: invalid config` and emitted no
+`MLAB` telemetry. No physical conditioning motion or formal run was therefore
+confirmed. c0 is classified as a deployment/capability failure, not a servo or
+conditioning result; `formal_run_started=false` and cleanup completed.
+
+The process is now explicit: capture host branch/commit and device-reported
+image identity separately, flash and verify with ESP-IDF monitor, query
+`mlab caps`, and only then allow a capability-matched experiment. A malformed
+capability response, unsupported experiment, invalid config without telemetry,
+or any failed readiness/safety gate stops the protocol without an automatic
+retry or follow-up movement.

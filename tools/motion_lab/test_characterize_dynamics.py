@@ -12,6 +12,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import characterize_dynamics as dynamics  # noqa: E402
 from characterize_dynamics import (  # noqa: E402
+    DeploymentGateAbort,
     SafetyGateAbort,
     _build_plan,
     _build_parser,
@@ -65,6 +66,19 @@ def _params_capture() -> str:
 
 def _voltage_capture(voltage: float = 8.0) -> str:
     return f"MLAB_VOLTAGE,ts_ms=100,id=1,voltage_v={voltage:.2f},request_sent=1\n"
+
+
+def _caps_capture(
+    *,
+    experiments: str = "0|1|2|3|4|5",
+    protocol: int = 2,
+    reversal: int = 1,
+) -> str:
+    return (
+        f"MLAB_CAPS,protocol={protocol},experiments={experiments},reversal={reversal},"
+        "project=rig-arm,version=test,build_date=2026-09-16,build_time=12:00:00,"
+        "elf_sha256=device-test-sha\n"
+    )
 
 
 def _mlab_capture(feedback: float) -> str:
@@ -124,13 +138,24 @@ def _hardware_args(output_dir: Path, max_runs: int = 1):
     ])
 
 
-def _run_with_fake_capture(args, manifest, groups, *, status_text: str, movement_feedback: float | None):
+def _run_with_fake_capture(
+    args,
+    manifest,
+    groups,
+    *,
+    status_text: str,
+    movement_feedback: float | None,
+    caps_text: str | None = None,
+    invalid_conditioning: bool = False,
+):
     calls: list[str] = []
     original = dynamics._capture_command
 
     def fake_capture(_port, command, output, _duration_ms, **_kwargs):
         calls.append(command)
-        if command == "mlab status":
+        if command == "mlab caps":
+            output.write_text(caps_text or _caps_capture(), encoding="utf-8")
+        elif command == "mlab status":
             output.write_text(status_text, encoding="utf-8")
         elif command == "mlab params":
             output.write_text(_params_capture(), encoding="utf-8")
@@ -138,7 +163,12 @@ def _run_with_fake_capture(args, manifest, groups, *, status_text: str, movement
             output.write_text(_voltage_capture(), encoding="utf-8")
         elif command.startswith("mlab run"):
             if command.startswith("mlab run 5"):
-                output.write_text(_conditioning_capture(), encoding="utf-8")
+                output.write_text(
+                    "MLAB_CONSOLE run: invalid config\r\n"
+                    if invalid_conditioning
+                    else _conditioning_capture(),
+                    encoding="utf-8",
+                )
             else:
                 output.write_text(_mlab_capture(movement_feedback or 0.0), encoding="utf-8")
         else:
@@ -188,6 +218,30 @@ def main() -> int:
             assert scalar_rows[1]["speed_cmd_raw"] == 350.0
         finally:
             scalar_capture.unlink()
+
+        caps_capture = capture.with_name(".synthetic-mlab-caps.log")
+        caps_capture.write_text(_caps_capture(), encoding="utf-8")
+        try:
+            capabilities = dynamics._parse_caps_capture(caps_capture, required_experiment=5)
+            assert capabilities["passed"] is True
+            assert capabilities["protocol"] == 2
+            assert capabilities["experiments"] == [0, 1, 2, 3, 4, 5]
+            assert capabilities["device_identity"]["elf_sha256"] == "device-test-sha"
+        finally:
+            caps_capture.unlink()
+
+        malformed_caps = capture.with_name(".synthetic-mlab-malformed-caps.log")
+        malformed_caps.write_text(
+            "MLAB_CAPS,protocol=1,experiments=0|1|2|3|4,reversal=0\n",
+            encoding="utf-8",
+        )
+        try:
+            rejected = dynamics._parse_caps_capture(malformed_caps, required_experiment=5)
+            assert rejected["passed"] is False
+            assert any("protocol" in reason for reason in rejected["reasons"])
+            assert any("experiment 5" in reason for reason in rejected["reasons"])
+        finally:
+            malformed_caps.unlink()
     finally:
         capture.unlink()
 
@@ -307,6 +361,48 @@ def main() -> int:
         persisted = json.loads((output_dir / "manifest.json").read_text(encoding="utf-8"))
         assert not persisted["preflight"]["decision"]["passed"]
 
+    # A stale image that does not advertise the required reversal experiment
+    # must fail before status/preflight or any physical movement command.
+    with tempfile.TemporaryDirectory(prefix="rig-dynamics-capability-mismatch-") as directory:
+        output_dir = Path(directory)
+        args = _build_parser().parse_args([
+            "--execute", "--confirm-hardware", "--port", "/dev/test",
+            "--output-dir", str(output_dir), "--joint", "2", "--max-runs", "1",
+            "--repetitions", "1", "--precondition", "positive",
+        ])
+        groups, planned = _build_plan(args)
+        manifest = _initial_manifest(args, planned)
+        calls, error = _run_with_fake_capture(
+            args,
+            manifest,
+            groups,
+            status_text=_status_capture(),
+            movement_feedback=None,
+            caps_text="MLAB_CAPS,protocol=2,experiments=0|1|2|3|4,reversal=0\n",
+        )
+        assert isinstance(error, DeploymentGateAbort)
+        assert calls[0] == "mlab caps"
+        assert not any(command.startswith("mlab status") for command in calls)
+        assert not any(command.startswith("mlab run") for command in calls)
+        persisted = json.loads((output_dir / "manifest.json").read_text(encoding="utf-8"))
+        assert persisted["status"] == "deployment_failed"
+        assert persisted["deployment"]["run_rejection"] if "run_rejection" in persisted["deployment"] else True
+
+    # Device identity is a separate evidence source from the host checkout
+    # recorded in the manifest's firmware section.
+    with tempfile.TemporaryDirectory(prefix="rig-dynamics-identity-") as directory:
+        output_dir = Path(directory)
+        caps_path = output_dir / "caps.log"
+        caps_path.write_text(_caps_capture(), encoding="utf-8")
+        manifest = _initial_manifest(_hardware_args(output_dir), [])
+        manifest["firmware"]["commit"] = "host-commit"
+        manifest["deployment"]["device_identity"] = dynamics._parse_caps_capture(caps_path)["device_identity"]
+        manifest_path = output_dir / "manifest.json"
+        _write_json(manifest_path, manifest)
+        report = _analyze_manifest(output_dir, manifest_path, max_load_raw=3000.0)
+        assert report["firmware"]["commit"] == "host-commit"
+        assert report["deployment"]["device_identity"]["elf_sha256"] == "device-test-sha"
+
     with tempfile.TemporaryDirectory(prefix="rig-dynamics-conditioning-") as directory:
         output_dir = Path(directory)
         args = _build_parser().parse_args([
@@ -338,6 +434,38 @@ def main() -> int:
         assert "mlab stop" in calls and "mlab poll off" in calls and "mlab comp off" in calls
         persisted = json.loads((output_dir / "manifest.json").read_text(encoding="utf-8"))
         assert persisted["status"] == "conditioning_failed"
+        assert persisted["conditioning"]["formal_run_started"] is False
+
+    # An on-device invalid-config response with no MLAB rows is a deployment
+    # readiness failure, never an actuator/conditioning result.
+    with tempfile.TemporaryDirectory(prefix="rig-dynamics-invalid-config-") as directory:
+        output_dir = Path(directory)
+        args = _build_parser().parse_args([
+            "--execute", "--confirm-hardware", "--port", "/dev/test",
+            "--output-dir", str(output_dir), "--joint", "2", "--max-runs", "1",
+            "--repetitions", "1", "--precondition", "positive",
+        ])
+        groups, planned = _build_plan(args)
+        manifest = _initial_manifest(args, planned)
+        original_sleep = dynamics.time.sleep
+        dynamics.time.sleep = lambda _seconds: None
+        try:
+            calls, error = _run_with_fake_capture(
+                args,
+                manifest,
+                groups,
+                status_text=_status_capture(),
+                movement_feedback=None,
+                invalid_conditioning=True,
+            )
+        finally:
+            dynamics.time.sleep = original_sleep
+        assert isinstance(error, DeploymentGateAbort)
+        assert any(command.startswith("mlab run 5") for command in calls)
+        assert not any(command.startswith("mlab run 4") for command in calls)
+        persisted = json.loads((output_dir / "manifest.json").read_text(encoding="utf-8"))
+        assert persisted["status"] == "deployment_failed"
+        assert persisted["deployment"]["run_rejection"]["physical_motion_started"] is False
         assert persisted["conditioning"]["formal_run_started"] is False
 
     with tempfile.TemporaryDirectory(prefix="rig-dynamics-conditioning-only-") as directory:
