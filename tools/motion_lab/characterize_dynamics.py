@@ -551,6 +551,7 @@ def _initial_manifest(args: argparse.Namespace, planned: list[dict]) -> dict:
             "velocity_estimator": "20ms linear resample + centered local quadratic fit",
             "raw_speed_is_calibrated": False,
         },
+        "preflight": [],
         "planned_runs": planned,
         "runs": [],
     }
@@ -583,6 +584,7 @@ def _analyze_manifest(output_dir: Path, manifest_path: Path, *, max_load_raw: fl
         "firmware": manifest.get("firmware", {}),
         "joint_selection": manifest.get("joint_selection", {}),
         "safety_policy": manifest.get("safety_policy", {}),
+        "preflight": manifest.get("preflight", []),
         "runs": metrics,
         "feedback_jump_events": events,
         "direction_asymmetry": _direction_asymmetry(metrics),
@@ -631,6 +633,7 @@ def _run_hardware(args: argparse.Namespace, output_dir: Path, manifest: dict, gr
     try:
         # Establish factory-like runtime context and preserve read-only identity
         # captures before the first movement.
+        preflight = []
         for name, command, duration in (
             ("preflight_poll_off.log", "mlab poll off", 350),
             ("preflight_comp_off.log", "mlab comp off", 350),
@@ -639,7 +642,16 @@ def _run_hardware(args: argparse.Namespace, output_dir: Path, manifest: dict, gr
             ("preflight_voltage.log", "mlab voltage", 500),
             ("preflight_poll_on.log", f"mlab poll {args.joint} {args.poll_period_ms}", 350),
         ):
-            _capture_command(args.port, command, _new_output(output_dir / name), duration, tail_s=0.5)
+            path = _new_output(output_dir / name)
+            _capture_command(args.port, command, path, duration, tail_s=0.5)
+            preflight.append({
+                "name": name,
+                "command": command,
+                "duration_ms": duration,
+                "log": name,
+                "sha256": _sha256(path),
+            })
+        manifest["preflight"] = preflight
         manifest["status"] = "running"
         _write_json(output_dir / "manifest.json", manifest)
         for group in groups:
