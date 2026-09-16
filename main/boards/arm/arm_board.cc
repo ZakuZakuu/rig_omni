@@ -79,6 +79,7 @@ MotionLabStartResult StartMotionLab(const MotionLabConfig& config) {
 
 void PrintMotionLabConsoleHelp() {
     printf("MLAB_CONSOLE commands:\r\n"
+           "  mlab idle off|on|status\r\n"
            "  mlab hold\r\n"
            "  mlab visible [joint 0..4]  (10 deg, 1.5 s out, 1 s hold, 1.5 s back)\r\n"
            "  mlab run <experiment 0..2 or 4> <trajectory 0..2> <joint 0..4> <amplitude_deg -10..-1 or 1..10> "
@@ -1143,6 +1144,20 @@ public:
 
                 if (strcmp(line, "mlab help") == 0) {
                     PrintMotionLabConsoleHelp();
+                    continue;
+                }
+                if (strcmp(line, "mlab idle off") == 0 ||
+                    strcmp(line, "mlab idle on") == 0 ||
+                    strcmp(line, "mlab idle status") == 0) {
+                    if (motion_lab_is_active()) {
+                        printf("MLAB_IDLE busy; stop Motion Lab before changing idle motion\r\n");
+                    } else if (strcmp(line, "mlab idle status") == 0) {
+                        printf("MLAB_IDLE enabled=%d\r\n", idle_motion_is_enabled() ? 1 : 0);
+                    } else {
+                        const bool enable = strcmp(line, "mlab idle on") == 0;
+                        idle_motion_set_enable(enable);
+                        printf("MLAB_IDLE enabled=%d\r\n", enable ? 1 : 0);
+                    }
                     continue;
                 }
                 if (strcmp(line, "mlab hold") == 0) {

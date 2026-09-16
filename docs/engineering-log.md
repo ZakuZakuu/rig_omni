@@ -587,3 +587,20 @@ confirmed joint 0 P/D/I=`0F/0F/00`, startup=`0x0018`, dead zones=`0x01/0x01`,
 and `MLAB_COMP enabled=0`. v0.2 therefore closes as hardware-dominated with
 the factory profile retained; no candidate is promoted and the next milestone
 is Creature Motion rather than more low-level actuator tuning.
+
+## 2026-09-17 — Stock idle-motion isolation check
+
+The supervised conditioning-only capture
+`backups/motion-lab-conditioning-only-2026-09-17-positive-hw1/` was run while
+the stock idle behavior was visibly enabled before the experiment. The
+firmware's direct-control branch disables idle motion as soon as it takes
+ownership and restores the previous state when the run finishes. The
+immutable UART capture confirms that this isolation held: during the 86-row
+conditioning window, J0 and J4 command positions were constant (0-count
+span), while only the selected J2 command changed. The observed J2
+under-travel therefore must not be attributed to q0/q4 idle offsets.
+
+To make the state controllable from the ESP-IDF monitor without an MCP client,
+the UART console now provides `mlab idle off|on|status`. This is a RAM-only
+switch; reboot restores the upstream default (enabled), and it does not write
+servo EEPROM or alter Motion Lab's temporary isolation/restore behavior.
