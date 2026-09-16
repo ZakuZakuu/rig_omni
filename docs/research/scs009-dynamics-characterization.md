@@ -27,7 +27,7 @@ conditions:
 | Nominal test voltage | 6 V typical | Use vendor speed/torque values only as a sanity reference. |
 | Product-page operating range | 4.8--7.4 V | Do not assume the RIG-Arm rail is within this range without measuring it. |
 | Datasheet input range | 4.0--7.4 V; typical entries at 4.8 V and 6 V | The wider datasheet input line does not make higher voltage a validated operating point. |
-| No-load speed | 0.125 s/60° at 4.8 V; 0.1 s/60° (100 RPM) at 6 V | No-load speed is not an assembled-arm usable-speed limit. Do not convert it directly into a Ruckig limit. |
+| No-load speed | 0.125 s/60° at 4.8 V; vendor materials cite roughly 0.07--0.10 s/60° at 6 V (the current C013 sheet lists 0.1 s/60° / 100 RPM; older/common SCS009 references cite about 0.07 s/60°) | The documents are not a single validated installed-arm measurement. No-load speed is not an assembled-arm usable-speed limit; do not convert it directly into a Ruckig limit. |
 | Rated / stall torque | 0.75 / 2.3 kg-cm at 6 V | Not a target for a stall or maximum-performance test. |
 | Feedback | position, speed, load, input voltage, temperature | The available fields are useful diagnostics, but the raw speed/load encodings still need model-specific interpretation. |
 | Resolution / travel | 0.293° (300°/1024), 300° command range | Quantization is material for small-amplitude tests; onset and velocity estimation must use sustained movement and timestamped samples. |
