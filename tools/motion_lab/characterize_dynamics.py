@@ -676,6 +676,12 @@ def _conditioning_metrics(
 
     valid = _valid_feedback_rows(rows)
     feedback_samples = _unique_feedback_samples(rows)
+    command_center_count = rows[0]["cmd_pos"] if rows else None
+    command_displacement = (
+        []
+        if command_center_count is None
+        else [row["cmd_pos"] - command_center_count for row in rows]
+    )
     displacement = [row["fb_pos"] - center_count for row in valid]
     age_values = [row["fb_age_ms"] for row in rows if row["fb_age_ms"] < 1_000_000_000]
     target_counts = abs(float(metadata["amplitude_deg"])) * COUNTS_PER_DEG
@@ -699,6 +705,19 @@ def _conditioning_metrics(
         "conditioning_feedback_age_p95_ms": _percentile(age_values, 0.95),
         "conditioning_feedback_age_max_ms": max(age_values, default=None),
         "conditioning_stale_rows": sum(1 for row in rows if row["stale"] != 0),
+        "conditioning_command_center_count": command_center_count,
+        "conditioning_commanded_positive_counts": max(
+            0.0, max(command_displacement, default=0.0)
+        ),
+        "conditioning_commanded_negative_counts": max(
+            0.0, -min(command_displacement, default=0.0)
+        ),
+        "conditioning_commanded_positive_deg": (
+            max(0.0, max(command_displacement, default=0.0)) * DEG_PER_COUNT
+        ),
+        "conditioning_commanded_negative_deg": (
+            max(0.0, -min(command_displacement, default=0.0)) * DEG_PER_COUNT
+        ),
         "conditioning_achieved_positive_counts": max(0.0, max(displacement, default=0.0)),
         "conditioning_achieved_negative_counts": max(0.0, -min(displacement, default=0.0)),
         "conditioning_achieved_positive_deg": max(0.0, max(displacement, default=0.0)) * DEG_PER_COUNT,
@@ -881,6 +900,8 @@ def _print_plan(args: argparse.Namespace, groups: list[dict], planned: list[dict
             f"  conditioning: {conditioning['description']}; "
             f"{CONDITIONING_SETTLE_MS} ms settle before formal run"
         )
+        if args.conditioning_only:
+            print("  mode: conditioning-only; formal dynamics captures disabled")
     else:
         print("  conditioning: disabled (cold/unconditioned protocol)")
     print(f"  planned movement captures: {len(planned)}")
@@ -933,6 +954,7 @@ def _initial_manifest(args: argparse.Namespace, planned: list[dict]) -> dict:
         },
         "execution": {
             "max_runs": args.max_runs,
+            "conditioning_only": args.conditioning_only,
             "executed_runs": 0,
             "stop_reason": "not_started",
         },
@@ -970,6 +992,7 @@ def _analyze_manifest(output_dir: Path, manifest_path: Path, *, max_load_raw: fl
         "safety_policy": manifest.get("safety_policy", {}),
         "preflight": manifest.get("preflight", {"captures": [], "decision": None}),
         "conditioning": manifest.get("conditioning", {"enabled": False}),
+        "execution": manifest.get("execution", {}),
         "runs": metrics,
         "feedback_jump_events": events,
         "direction_asymmetry": _direction_asymmetry(metrics),
@@ -1205,6 +1228,10 @@ def _run_hardware(args: argparse.Namespace, output_dir: Path, manifest: dict, gr
                 manifest["execution"]["stop_reason"] = "conditioning_capture"
                 _write_json(output_dir / "manifest.json", manifest)
                 raise SafetyGateAbort(f"conditioning capture failed: {error}") from error
+            # No conditioning helper may claim that the formal phase started
+            # before this gate returns; the only assignment that flips this
+            # field is immediately below, after a successful non-only gate.
+            conditioning["formal_run_started"] = False
             manifest["conditioning"] = conditioning
             _write_json(output_dir / "manifest.json", manifest)
             if not conditioning["conditioning_passed"]:
@@ -1215,6 +1242,13 @@ def _run_hardware(args: argparse.Namespace, output_dir: Path, manifest: dict, gr
                     "conditioning health gate failed: "
                     + "; ".join(conditioning["metrics"]["conditioning_health_reasons"])
                 )
+            if args.conditioning_only:
+                manifest["status"] = "conditioning_complete"
+                manifest["execution"]["stop_reason"] = "conditioning_only"
+                manifest["conditioning"]["formal_run_started"] = False
+                _write_json(output_dir / "manifest.json", manifest)
+                print("conditioning-only complete; formal dynamics run not started", flush=True)
+                return
             manifest["conditioning"]["formal_run_started"] = True
         manifest["status"] = "running"
         manifest["execution"]["stop_reason"] = "running"
@@ -1298,6 +1332,14 @@ def _build_parser() -> argparse.ArgumentParser:
             "health motion before formal measurements; disabled by default"
         ),
     )
+    parser.add_argument(
+        "--conditioning-only",
+        action="store_true",
+        help=(
+            "run exactly one selected conditioning prelude and settle/status "
+            "capture; never start a formal dynamics run"
+        ),
+    )
     parser.add_argument("--max-load-raw", type=float, default=3000.0)
     parser.add_argument("--skip-low-speed", action="store_true")
     parser.add_argument("--skip-reversal", action="store_true")
@@ -1327,6 +1369,10 @@ def main() -> int:
         parser.error("--port is required with --execute")
     if args.execute and not args.confirm_hardware:
         parser.error("physical execution requires --confirm-hardware")
+    if args.conditioning_only and not args.execute:
+        parser.error("--conditioning-only requires --execute")
+    if args.conditioning_only and not args.precondition:
+        parser.error("--conditioning-only requires --precondition positive|negative")
     if any(speed < 1 or speed > 45 for speed in args.low_speed_deg_s):
         parser.error("low-speed values must remain 1..45 deg/s")
     tiers_by_name = {tier.name for tier in DEFAULT_TIERS}

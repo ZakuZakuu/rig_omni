@@ -89,6 +89,33 @@ def _mlab_capture(feedback: float) -> str:
     return header + "\n".join(rows) + "\n"
 
 
+def _conditioning_capture() -> str:
+    header = "MLAB,ts_ms,experiment,trajectory,elapsed_ms,total_ms,cmd_deg[5],cmd_pos[5],fb_pos[5],fb_speed_raw[5],fb_load_raw[5],fb_ts_ms[5],fb_age_ms[5],fb_stale[5],servo_voltage_v,speed_cmd_raw\n"
+    rows = []
+    for timestamp, elapsed, command, feedback in (
+        (100, 0, 512, 512),
+        (1100, 1000, 517, 521),
+        (3100, 3000, 507, 503),
+        (5100, 5000, 512, 512),
+    ):
+        command_array = ["0", "0", str(command), "0", "0"]
+        position_array = ["512", "512", str(feedback), "512", "512"]
+        arrays = [
+            "|".join(command_array),
+            "|".join(command_array),
+            "|".join(position_array),
+            "0|0|0|0|0",
+            "100|100|100|100|100",
+            "|".join([str(timestamp)] * 5),
+            "0|0|0|0|0",
+            "0|0|0|0|0",
+            "8.0",
+            "350",
+        ]
+        rows.append(f"MLAB,{timestamp},5,2,{elapsed},5000," + ",".join(arrays))
+    return header + "\n".join(rows) + "\n"
+
+
 def _hardware_args(output_dir: Path, max_runs: int = 1):
     return _build_parser().parse_args([
         "--execute", "--confirm-hardware", "--port", "/dev/test",
@@ -110,7 +137,10 @@ def _run_with_fake_capture(args, manifest, groups, *, status_text: str, movement
         elif command == "mlab voltage":
             output.write_text(_voltage_capture(), encoding="utf-8")
         elif command.startswith("mlab run"):
-            output.write_text(_mlab_capture(movement_feedback or 0.0), encoding="utf-8")
+            if command.startswith("mlab run 5"):
+                output.write_text(_conditioning_capture(), encoding="utf-8")
+            else:
+                output.write_text(_mlab_capture(movement_feedback or 0.0), encoding="utf-8")
         else:
             output.write_text("ack\n", encoding="utf-8")
 
@@ -177,7 +207,7 @@ def main() -> int:
     assert _command_for(positive_conditioning) == "mlab run 5 2 2 5 1000 0 8 30 250"
     assert _command_for(negative_conditioning) == "mlab run 5 2 2 -5 1000 0 8 30 250"
     conditioning_rows = [_row(index, command, feedback) for index, (command, feedback) in enumerate(
-        ((0, 100), (5, 120), (5, 80), (0, 100))
+        ((0, 100), (5, 120), (-5, 80), (0, 100))
     )]
     conditioning_metadata = {**positive_conditioning, "run": "conditioning"}
     conditioning_summary = _conditioning_metrics(
@@ -189,6 +219,10 @@ def main() -> int:
     )
     assert conditioning_summary["conditioning_achieved_positive_counts"] == 20.0
     assert conditioning_summary["conditioning_achieved_negative_counts"] == 20.0
+    assert conditioning_summary["conditioning_commanded_positive_counts"] == 5.0
+    assert conditioning_summary["conditioning_commanded_negative_counts"] == 5.0
+    assert conditioning_summary["conditioning_commanded_positive_deg"] > 0.0
+    assert conditioning_summary["conditioning_commanded_negative_deg"] > 0.0
     assert not _conditioning_health_reasons(conditioning_summary, conditioned_args)
     failed_conditioning = dict(conditioning_summary)
     failed_conditioning["conditioning_achieved_positive_counts"] = 0.0
@@ -301,6 +335,60 @@ def main() -> int:
             dynamics._run_conditioning = original_conditioning
         assert isinstance(error, SafetyGateAbort)
         assert not any(command.startswith("mlab run 4") for command in calls)
+        assert "mlab stop" in calls and "mlab poll off" in calls and "mlab comp off" in calls
+        persisted = json.loads((output_dir / "manifest.json").read_text(encoding="utf-8"))
+        assert persisted["status"] == "conditioning_failed"
+        assert persisted["conditioning"]["formal_run_started"] is False
+
+    with tempfile.TemporaryDirectory(prefix="rig-dynamics-conditioning-only-") as directory:
+        output_dir = Path(directory)
+        args = _build_parser().parse_args([
+            "--execute", "--confirm-hardware", "--port", "/dev/test",
+            "--output-dir", str(output_dir), "--joint", "2", "--max-runs", "7",
+            "--repetitions", "1", "--precondition", "positive", "--conditioning-only",
+        ])
+        groups, planned = _build_plan(args)
+        manifest = _initial_manifest(args, planned)
+        original_sleep = dynamics.time.sleep
+        dynamics.time.sleep = lambda _seconds: None
+        try:
+            calls, error = _run_with_fake_capture(
+                args, manifest, groups, status_text=_status_capture(), movement_feedback=100.0
+            )
+        finally:
+            dynamics.time.sleep = original_sleep
+        assert error is None
+        assert "mlab run 5 2 2 5 1000 0 8 30 250" in calls
+        assert not any(command.startswith("mlab run 4") for command in calls)
+        persisted = json.loads((output_dir / "manifest.json").read_text(encoding="utf-8"))
+        assert persisted["status"] == "conditioning_complete"
+        assert persisted["conditioning"]["formal_run_started"] is False
+        assert persisted["conditioning"]["conditioning_passed"] is True
+        assert persisted["execution"]["conditioning_only"] is True
+        assert "mlab stop" in calls and "mlab poll off" in calls and "mlab comp off" in calls
+
+    # The ordinary --precondition path still starts its formal run after a
+    # passing prelude; conditioning-only is an explicit opt-out from that step.
+    with tempfile.TemporaryDirectory(prefix="rig-dynamics-conditioning-normal-") as directory:
+        output_dir = Path(directory)
+        args = _build_parser().parse_args([
+            "--execute", "--confirm-hardware", "--port", "/dev/test",
+            "--output-dir", str(output_dir), "--joint", "2", "--max-runs", "1",
+            "--repetitions", "1", "--precondition", "positive",
+        ])
+        groups, planned = _build_plan(args)
+        manifest = _initial_manifest(args, planned)
+        original_sleep = dynamics.time.sleep
+        dynamics.time.sleep = lambda _seconds: None
+        try:
+            calls, error = _run_with_fake_capture(
+                args, manifest, groups, status_text=_status_capture(), movement_feedback=100.0
+            )
+        finally:
+            dynamics.time.sleep = original_sleep
+        assert isinstance(error, SafetyGateAbort)
+        assert any(command.startswith("mlab run 5") for command in calls)
+        assert any(command.startswith("mlab run 4") for command in calls)
         assert "mlab stop" in calls and "mlab poll off" in calls and "mlab comp off" in calls
 
     # The confirmation flag remains an independent hard gate: a caller cannot

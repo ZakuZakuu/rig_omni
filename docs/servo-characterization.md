@@ -242,6 +242,22 @@ python tools/motion_lab/characterize_dynamics.py \
 conditioning prelude is always evaluated first and is never counted as a
 formal `runs` entry.
 
+To validate the preconditioning motion itself before coupling it to a formal
+measurement, use `--conditioning-only` together with the same explicit
+hardware gates:
+
+```bash
+python tools/motion_lab/characterize_dynamics.py \
+  --execute --confirm-hardware --conditioning-only \
+  --precondition positive --joint 2 --port "$RIG_PORT" \
+  --output-dir backups/motion-lab-conditioning-only-YYYY-MM-DD
+```
+
+This mode performs preflight, exactly one reversal sweep, the 2-second settle
+observation, and cleanup. It records `conditioning_complete` (or
+`conditioning_failed`) and never starts a formal `mlab run 4`, regardless of
+`--max-runs`.
+
 Conditioning is a health/preload gate, not part of formal-run metrics. It must
 show fresh feedback, telemetry-confirmed motion in both directions, no status
 error or stale flag, voltage within the existing observational ~8 V review
@@ -249,6 +265,12 @@ band, raw load below the provisional anomaly gate, and return within five
 encoder counts of the preconditioning center. If any gate fails, the formal
 run is not started. Reports keep `conditioning`, `preflight`, and formal `runs`
 as separate sections and record `formal_run_started` explicitly.
+
+Conditioning metrics report the command positions actually emitted in the
+capture (positive/negative excursion in counts and degrees), the corresponding
+feedback excursions, return error, unique feedback rate/age, peak raw load,
+and voltage range. Thus the `+5° -> -5°` reversal leg is measured rather than
+assumed to reach either nominal endpoint.
 
 ### Initial cold-baseline forensic comparison
 
