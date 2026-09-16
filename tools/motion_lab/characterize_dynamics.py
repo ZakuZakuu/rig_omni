@@ -18,6 +18,7 @@ import csv
 import hashlib
 import json
 import math
+import re
 import statistics
 import subprocess
 import sys
@@ -44,8 +45,14 @@ ONSET_THRESHOLD_COUNTS = 3.0
 ONSET_COMMAND_THRESHOLD_COUNTS = 1.0
 SUSTAINED_ONSET_SAMPLES = 3
 VALID_AGE_MAX_MS = 250.0
-VOLTAGE_MIN_V = 7.5
-VOLTAGE_MAX_V = 8.8
+# The installed-arm telemetry previously clustered around 8 V.  This is an
+# observational baseline used to require human review, not a validated servo
+# operating range or electrical safety envelope.
+VOLTAGE_BASELINE_V = 8.0
+VOLTAGE_DEVIATION_MAX_V = 0.5
+TRACKING_ERROR_MIN_DEG = 1.5
+TRACKING_ERROR_SCALE = 0.75
+TRACKING_ERROR_MAX_DEG = 6.0
 
 
 @dataclass(frozen=True)
@@ -70,6 +77,15 @@ DEFAULT_TIERS = (
 
 class SafetyGateAbort(RuntimeError):
     """Raised when a run invalidates the progressive matrix."""
+
+
+def _tracking_error_guard(amplitude_deg: float) -> float:
+    """Return a small-motion sanity threshold, not a capability claim."""
+
+    return min(
+        TRACKING_ERROR_MAX_DEG,
+        max(TRACKING_ERROR_MIN_DEG, abs(float(amplitude_deg)) * TRACKING_ERROR_SCALE),
+    )
 
 
 def _percentile(values: Iterable[float], fraction: float) -> float | None:
@@ -111,6 +127,150 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _read_capture_text(path: Path) -> str:
+    return path.read_text(errors="replace")
+
+
+def _parse_status_capture(path: Path) -> dict:
+    """Parse the read-only ``mlab status`` snapshot fail-closed."""
+
+    records: list[dict] = []
+    malformed = 0
+    for line in _read_capture_text(path).splitlines():
+        if not line.startswith("MLAB_SERVO_STATUS,") or line.startswith("MLAB_SERVO_STATUS,id,"):
+            continue
+        fields = line.split(",")
+        if len(fields) != 10:
+            malformed += 1
+            continue
+        try:
+            records.append({
+                "id": int(fields[1]),
+                "error_hex": int(fields[2], 16),
+                "last_error_hex": int(fields[3], 16),
+                "last_error_ts_ms": int(fields[4]),
+                "error_count": int(fields[5]),
+                "fb_pos": int(fields[6]),
+                "fb_speed_raw": int(fields[7]),
+                "fb_load_raw": int(fields[8]),
+                "stale": int(fields[9]),
+            })
+        except ValueError:
+            malformed += 1
+    records.sort(key=lambda record: record["id"])
+    expected_ids = list(range(1, 6))
+    missing_ids = [servo_id for servo_id in expected_ids if servo_id not in {record["id"] for record in records}]
+    status_errors = [
+        {
+            "id": record["id"],
+            "error_hex": record["error_hex"],
+            "last_error_hex": record["last_error_hex"],
+            "stale": record["stale"],
+        }
+        for record in records
+        if record["error_hex"] != 0 or record["last_error_hex"] != 0 or record["stale"] != 0
+    ]
+    return {
+        "records": records,
+        "record_count": len(records),
+        "missing_ids": missing_ids,
+        "malformed_rows": malformed,
+        "errors": status_errors,
+        "parse_ok": len(records) == 5 and not missing_ids and malformed == 0,
+    }
+
+
+def _parse_voltage_capture(path: Path) -> dict:
+    """Parse the read-only ID-1 voltage response and require a valid reply."""
+
+    pattern = re.compile(
+        r"^MLAB_VOLTAGE,ts_ms=(?P<ts>\d+),id=(?P<id>\d+),"
+        r"voltage_v=(?P<voltage>-?\d+(?:\.\d+)?),request_sent=(?P<sent>[01])$"
+    )
+    matches: list[dict] = []
+    for line in _read_capture_text(path).splitlines():
+        match = pattern.match(line.strip())
+        if match is None:
+            continue
+        matches.append({
+            "ts_ms": int(match.group("ts")),
+            "id": int(match.group("id")),
+            "voltage_v": float(match.group("voltage")),
+            "request_sent": int(match.group("sent")),
+        })
+    record = next((item for item in reversed(matches) if item["id"] == 1), None)
+    parse_ok = (
+        record is not None
+        and record["request_sent"] == 1
+        and math.isfinite(record["voltage_v"])
+        and record["voltage_v"] > 0.0
+    )
+    return {"record": record, "records": matches, "parse_ok": parse_ok}
+
+
+def _parse_params_capture(path: Path) -> dict:
+    """Validate that the immutable parameter snapshot completed."""
+
+    text = _read_capture_text(path)
+    rows = [line for line in text.splitlines() if line.startswith("SCS009_PARAM,")]
+    return {
+        "row_count": len(rows),
+        "read_only_banner": "SCS009_PARAM dump: read-only" in text,
+        "complete": "SCS009_PARAM dump: complete" in text,
+        "parse_ok": bool(rows) and "SCS009_PARAM dump: complete" in text,
+    }
+
+
+def _preflight_decision(status_path: Path, params_path: Path, voltage_path: Path) -> dict:
+    """Return a persisted, fail-closed decision before any movement command."""
+
+    reasons: list[str] = []
+    try:
+        status = _parse_status_capture(status_path)
+    except (OSError, UnicodeError) as error:
+        status = {"parse_ok": False, "records": [], "errors": [], "missing_ids": [], "malformed_rows": 0}
+        reasons.append(f"status capture unreadable: {error}")
+    if not status.get("parse_ok"):
+        reasons.append("status capture missing or incomplete for servo IDs 1..5")
+    if status.get("errors"):
+        reasons.append("status reports a current, latched, or stale servo error")
+
+    try:
+        voltage = _parse_voltage_capture(voltage_path)
+    except (OSError, UnicodeError) as error:
+        voltage = {"parse_ok": False, "record": None, "records": []}
+        reasons.append(f"voltage capture unreadable: {error}")
+    if not voltage.get("parse_ok"):
+        reasons.append("voltage response missing, invalid, or request was not acknowledged")
+    voltage_record = voltage.get("record") or {}
+    voltage_value = voltage_record.get("voltage_v")
+    if voltage_value is not None and abs(voltage_value - VOLTAGE_BASELINE_V) > VOLTAGE_DEVIATION_MAX_V:
+        reasons.append(
+            f"observed voltage {voltage_value:.2f} V differs from the prior ~{VOLTAGE_BASELINE_V:.1f} V baseline; user review required"
+        )
+
+    try:
+        params = _parse_params_capture(params_path)
+    except (OSError, UnicodeError) as error:
+        params = {"parse_ok": False, "row_count": 0, "read_only_banner": False, "complete": False}
+        reasons.append(f"parameter snapshot unreadable: {error}")
+    if not params.get("parse_ok"):
+        reasons.append("read-only SCS009 parameter snapshot missing or incomplete")
+
+    return {
+        "passed": not reasons,
+        "reasons": reasons,
+        "status": status,
+        "voltage": voltage,
+        "parameters": params,
+        "voltage_policy": {
+            "baseline_v": VOLTAGE_BASELINE_V,
+            "review_deviation_v": VOLTAGE_DEVIATION_MAX_V,
+            "note": "observational preflight guard; not a validated SCS009 operating or safety range",
+        },
+    }
 
 
 def _capture_command(port: str, command: str, output: Path, duration_ms: int, *, tail_s: float = 1.5) -> None:
@@ -358,6 +518,7 @@ def analyze_run(rows: list[dict[str, float]], metadata: dict) -> tuple[dict, lis
         "achieved_excursion_deg": achieved_excursion_counts * DEG_PER_COUNT,
         "tracking_rms_error_deg": math.sqrt(sum(value * value for value in errors_deg) / len(errors_deg)) if errors_deg else None,
         "tracking_peak_error_deg": max((abs(value) for value in errors_deg), default=None),
+        "tracking_error_guard_deg": _tracking_error_guard(amplitude),
         "motion_onset_latency_ms": onset_latency,
         "motion_10_90_time_ms": time_10_90,
         "observed_peak_velocity_deg_s": max((abs(value) * DEG_PER_COUNT for value in observed_velocity), default=None),
@@ -395,13 +556,21 @@ def _safety_reasons(metric: dict, max_load_raw: float) -> list[str]:
     if metric["feedback_age_p95_ms"] is not None and metric["feedback_age_p95_ms"] > VALID_AGE_MAX_MS:
         reasons.append(f"feedback age p95 exceeds {VALID_AGE_MAX_MS:g} ms")
     if metric["voltage_min_v"] is not None and (
-        metric["voltage_min_v"] < VOLTAGE_MIN_V or metric["voltage_max_v"] > VOLTAGE_MAX_V
+        abs(metric["voltage_min_v"] - VOLTAGE_BASELINE_V) > VOLTAGE_DEVIATION_MAX_V
+        or abs(metric["voltage_max_v"] - VOLTAGE_BASELINE_V) > VOLTAGE_DEVIATION_MAX_V
     ):
-        reasons.append(f"voltage outside existing {VOLTAGE_MIN_V:g}..{VOLTAGE_MAX_V:g} V policy")
-    if metric["tracking_peak_error_deg"] is not None and metric["tracking_peak_error_deg"] > max(12.0, abs(metric["amplitude_deg"]) * 1.5):
-        reasons.append("tracking error unexpectedly large")
+        reasons.append(
+            "voltage deviates from the observational ~8 V device baseline; this is not a validated electrical safety limit"
+        )
+    tracking_guard = _tracking_error_guard(float(metric["amplitude_deg"]))
+    if metric["tracking_peak_error_deg"] is not None and metric["tracking_peak_error_deg"] > tracking_guard:
+        reasons.append(
+            f"tracking error exceeds the {tracking_guard:.2f} deg small-motion sanity guard (not a capability limit)"
+        )
     if metric["raw_load_max"] is not None and metric["raw_load_max"] > max_load_raw:
-        reasons.append(f"raw load exceeds configured {max_load_raw:g} gate")
+        reasons.append(
+            f"raw load exceeds provisional {max_load_raw:g} observational anomaly gate; raw encoding is not a physical load limit"
+        )
     return reasons
 
 
@@ -458,6 +627,23 @@ def _build_plan(args: argparse.Namespace) -> tuple[list[dict], list[dict]]:
     tiers_by_name = {tier.name: tier for tier in DEFAULT_TIERS}
     selected_tiers = [tiers_by_name[name] for name in args.tiers]
     groups: list[dict] = []
+    # The first planned condition is intentionally the documented gentle,
+    # positive 3-degree run. Low-speed probes and reversal are follow-up
+    # observations, never an accidental first hardware movement.
+    for tier in selected_tiers:
+        entries = []
+        for amplitude in amplitudes:
+            for direction in directions:
+                for repetition in range(1, args.repetitions + 1):
+                    entries.append({
+                        "tier": tier.name, "experiment": 4, "joint": args.joint,
+                        "amplitude_deg": direction * amplitude,
+                        "transition_ms": tier.transition_ms, "hold_ms": DEFAULT_HOLD_MS,
+                        "duration_ms": tier.total_ms, "max_velocity_deg_s": tier.max_velocity_deg_s,
+                        "max_acceleration_deg_s2": tier.max_acceleration_deg_s2,
+                        "deadband_mdeg": args.deadband_mdeg, "repetition": repetition,
+                    })
+        groups.append({"name": tier.name, "entries": entries})
     if not args.skip_low_speed:
         for speed in args.low_speed_deg_s:
             tier = DynamicsTier(f"low_speed_{speed}", 4000, speed, max(20, speed * 4))
@@ -473,20 +659,6 @@ def _build_plan(args: argparse.Namespace) -> tuple[list[dict], list[dict]]:
                         "deadband_mdeg": args.deadband_mdeg, "repetition": repetition,
                     })
             groups.append({"name": tier.name, "entries": entries})
-    for tier in selected_tiers:
-        entries = []
-        for amplitude in amplitudes:
-            for direction in directions:
-                for repetition in range(1, args.repetitions + 1):
-                    entries.append({
-                        "tier": tier.name, "experiment": 4, "joint": args.joint,
-                        "amplitude_deg": direction * amplitude,
-                        "transition_ms": tier.transition_ms, "hold_ms": DEFAULT_HOLD_MS,
-                        "duration_ms": tier.total_ms, "max_velocity_deg_s": tier.max_velocity_deg_s,
-                        "max_acceleration_deg_s2": tier.max_acceleration_deg_s2,
-                        "deadband_mdeg": args.deadband_mdeg, "repetition": repetition,
-                    })
-        groups.append({"name": tier.name, "entries": entries})
     if not args.skip_reversal:
         tier = tiers_by_name[args.reversal_tier]
         entries = []
@@ -506,6 +678,18 @@ def _build_plan(args: argparse.Namespace) -> tuple[list[dict], list[dict]]:
     return groups, planned
 
 
+def _execution_entries(groups: list[dict], max_runs: int) -> list[tuple[str, dict]]:
+    """Flatten the deterministic plan to the bounded set executed this run."""
+
+    selected: list[tuple[str, dict]] = []
+    for group in groups:
+        for entry in group["entries"]:
+            if len(selected) >= max_runs:
+                return selected
+            selected.append((group["name"], entry))
+    return selected
+
+
 def _command_for(entry: dict) -> str:
     return (
         f"mlab run {entry['experiment']} 2 {entry['joint']} {entry['amplitude_deg']} "
@@ -521,6 +705,7 @@ def _print_plan(args: argparse.Namespace, groups: list[dict], planned: list[dict
     print(f"  amplitudes: {args.amplitudes_deg}; directions: positive and negative; repetitions: {args.repetitions}")
     print(f"  hold: {DEFAULT_HOLD_MS} ms before return; selected feedback poll: {args.poll_period_ms} ms")
     print(f"  planned movement captures: {len(planned)}")
+    print(f"  execution limit: {args.max_runs} movement(s); first supervised run is the only default run")
     for group in groups:
         first = group["entries"][0]
         print(f"  {group['name']}: {len(group['entries'])} runs; first command: {_command_for(first)}")
@@ -538,11 +723,17 @@ def _initial_manifest(args: argparse.Namespace, planned: list[dict]) -> dict:
             "reason": "J2 is a visible forearm-pitch joint, away from model limits at the neutral pose; no current fault is assumed.",
         },
         "safety_policy": {
-            "voltage_min_v": VOLTAGE_MIN_V,
-            "voltage_max_v": VOLTAGE_MAX_V,
+            "voltage_baseline_v": VOLTAGE_BASELINE_V,
+            "voltage_review_deviation_v": VOLTAGE_DEVIATION_MAX_V,
+            "voltage_note": "observational preflight/run guard; not a validated SCS009 operating or electrical safety range",
             "valid_age_p95_max_ms": VALID_AGE_MAX_MS,
             "onset_threshold_counts": ONSET_THRESHOLD_COUNTS,
             "max_load_raw": args.max_load_raw,
+            "load_note": "provisional raw anomaly threshold; fb_load_raw encoding is not independently validated as physical load",
+            "tracking_error_min_deg": TRACKING_ERROR_MIN_DEG,
+            "tracking_error_scale": TRACKING_ERROR_SCALE,
+            "tracking_error_max_deg": TRACKING_ERROR_MAX_DEG,
+            "tracking_error_note": "small-motion abort sanity guard, not a measured servo capability",
             "parameters_modified": False,
         },
         "telemetry": {
@@ -551,7 +742,12 @@ def _initial_manifest(args: argparse.Namespace, planned: list[dict]) -> dict:
             "velocity_estimator": "20ms linear resample + centered local quadratic fit",
             "raw_speed_is_calibrated": False,
         },
-        "preflight": [],
+        "preflight": {"captures": [], "decision": None},
+        "execution": {
+            "max_runs": args.max_runs,
+            "executed_runs": 0,
+            "stop_reason": "not_started",
+        },
         "planned_runs": planned,
         "runs": [],
     }
@@ -584,7 +780,7 @@ def _analyze_manifest(output_dir: Path, manifest_path: Path, *, max_load_raw: fl
         "firmware": manifest.get("firmware", {}),
         "joint_selection": manifest.get("joint_selection", {}),
         "safety_policy": manifest.get("safety_policy", {}),
-        "preflight": manifest.get("preflight", []),
+        "preflight": manifest.get("preflight", {"captures": [], "decision": None}),
         "runs": metrics,
         "feedback_jump_events": events,
         "direction_asymmetry": _direction_asymmetry(metrics),
@@ -630,6 +826,7 @@ def _run_hardware(args: argparse.Namespace, output_dir: Path, manifest: dict, gr
     if not args.confirm_hardware:
         raise ValueError("physical execution requires --confirm-hardware")
     output_dir.mkdir(parents=True, exist_ok=True)
+    executed_runs = 0
     try:
         # Establish factory-like runtime context and preserve read-only identity
         # captures before the first movement.
@@ -638,12 +835,27 @@ def _run_hardware(args: argparse.Namespace, output_dir: Path, manifest: dict, gr
             ("preflight_poll_off.log", "mlab poll off", 350),
             ("preflight_comp_off.log", "mlab comp off", 350),
             ("preflight_status.log", "mlab status", 500),
-            ("preflight_params.log", "mlab params", 800),
+            # The snapshot reads every relevant register for all five IDs. It
+            # is intentionally given time to complete before any movement.
+            ("preflight_params.log", "mlab params", 15000),
             ("preflight_voltage.log", "mlab voltage", 500),
             ("preflight_poll_on.log", f"mlab poll {args.joint} {args.poll_period_ms}", 350),
         ):
-            path = _new_output(output_dir / name)
-            _capture_command(args.port, command, path, duration, tail_s=0.5)
+            try:
+                path = _new_output(output_dir / name)
+                _capture_command(args.port, command, path, duration, tail_s=0.5)
+            except Exception as error:
+                manifest["preflight"] = {
+                    "captures": preflight,
+                    "decision": {
+                        "passed": False,
+                        "reasons": [f"preflight command {command!r} failed: {error}"],
+                    },
+                }
+                manifest["status"] = "preflight_failed"
+                manifest["execution"]["stop_reason"] = "preflight_capture"
+                _write_json(output_dir / "manifest.json", manifest)
+                raise SafetyGateAbort(f"preflight capture failed for {command}: {error}") from error
             preflight.append({
                 "name": name,
                 "command": command,
@@ -651,35 +863,54 @@ def _run_hardware(args: argparse.Namespace, output_dir: Path, manifest: dict, gr
                 "log": name,
                 "sha256": _sha256(path),
             })
-        manifest["preflight"] = preflight
+        manifest["preflight"] = {"captures": preflight, "decision": None}
+        decision = _preflight_decision(
+            output_dir / "preflight_status.log",
+            output_dir / "preflight_params.log",
+            output_dir / "preflight_voltage.log",
+        )
+        manifest["preflight"]["decision"] = decision
+        if not decision["passed"]:
+            manifest["status"] = "preflight_failed"
+            manifest["execution"]["stop_reason"] = "preflight_gate"
+            _write_json(output_dir / "manifest.json", manifest)
+            raise SafetyGateAbort("preflight gate failed: " + "; ".join(decision["reasons"]))
         manifest["status"] = "running"
+        manifest["execution"]["stop_reason"] = "running"
         _write_json(output_dir / "manifest.json", manifest)
-        for group in groups:
-            print(f"starting supervised tier: {group['name']}", flush=True)
-            for entry in group["entries"]:
-                name = f"j{entry['joint']}_{entry['tier']}_{'pos' if entry['amplitude_deg'] > 0 else 'neg'}_r{entry['repetition']}"
-                metadata = {**entry, "run": name, "log": f"{name}.log", "command": _command_for(entry)}
-                print(f"  {name}: {metadata['command']}  (physical motion; supervise the arm)", flush=True)
-                _capture_command(
-                    args.port,
-                    metadata["command"],
-                    _new_output(output_dir / metadata["log"]),
-                    int(entry["duration_ms"]),
-                )
-                rows = _raw_rows(output_dir / metadata["log"], args.joint)
-                metric, _events = analyze_run(rows, metadata)
-                reasons = _safety_reasons(metric, args.max_load_raw)
-                metadata["sha256"] = _sha256(output_dir / metadata["log"])
-                metadata["safety_reasons"] = reasons
-                metadata["safety_passed"] = not reasons
-                manifest["runs"].append(metadata)
-                _write_json(output_dir / "manifest.json", manifest)
-                if reasons:
-                    raise SafetyGateAbort(f"{name}: safety gate failed: {'; '.join(reasons)}")
-            print(f"tier passed safety gates: {group['name']}", flush=True)
+        last_group = None
+        for group_name, entry in _execution_entries(groups, args.max_runs):
+            if group_name != last_group:
+                print(f"starting supervised tier: {group_name}", flush=True)
+                last_group = group_name
+            name = f"j{entry['joint']}_{entry['tier']}_{'pos' if entry['amplitude_deg'] > 0 else 'neg'}_r{entry['repetition']}"
+            metadata = {**entry, "run": name, "log": f"{name}.log", "command": _command_for(entry)}
+            print(f"  {name}: {metadata['command']}  (physical motion; supervise the arm)", flush=True)
+            _capture_command(
+                args.port,
+                metadata["command"],
+                _new_output(output_dir / metadata["log"]),
+                int(entry["duration_ms"]),
+            )
+            rows = _raw_rows(output_dir / metadata["log"], args.joint)
+            metric, _events = analyze_run(rows, metadata)
+            reasons = _safety_reasons(metric, args.max_load_raw)
+            metadata["sha256"] = _sha256(output_dir / metadata["log"])
+            metadata["safety_reasons"] = reasons
+            metadata["safety_passed"] = not reasons
+            manifest["runs"].append(metadata)
+            executed_runs += 1
+            manifest["execution"]["executed_runs"] = executed_runs
+            _write_json(output_dir / "manifest.json", manifest)
+            if reasons:
+                manifest["execution"]["stop_reason"] = "run_safety_gate"
+                raise SafetyGateAbort(f"{name}: safety gate failed: {'; '.join(reasons)}")
+        manifest["execution"]["stop_reason"] = "max_runs" if executed_runs >= args.max_runs else "plan_complete"
+        print(f"execution limit reached after {executed_runs} movement(s); returning control", flush=True)
         manifest["status"] = "complete"
     except (KeyboardInterrupt, SafetyGateAbort):
-        manifest["status"] = "aborted"
+        if manifest.get("status") != "preflight_failed":
+            manifest["status"] = "aborted"
         raise
     finally:
         # Restore normal polling and Motion Lab ownership even on user abort or
@@ -694,6 +925,7 @@ def _run_hardware(args: argparse.Namespace, output_dir: Path, manifest: dict, gr
                 _capture_command(args.port, command, _new_output(output_dir / name), 350, tail_s=0.5)
             except Exception as error:  # pragma: no cover - hardware cleanup path
                 print(f"warning: cleanup command failed ({command}): {error}", file=sys.stderr)
+        manifest["execution"]["executed_runs"] = executed_runs
         _write_json(output_dir / "manifest.json", manifest)
 
 
@@ -704,6 +936,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--joint", type=int, default=DEFAULT_JOINT, choices=range(5))
     parser.add_argument("--amplitudes-deg", type=lambda value: _parse_int_list(value, "amplitudes-deg"), default=DEFAULT_AMPLITUDES)
     parser.add_argument("--repetitions", type=int, default=3)
+    parser.add_argument(
+        "--max-runs",
+        type=int,
+        default=1,
+        help="maximum physical movement captures for this invocation (default: 1; use a larger value only after review)",
+    )
     parser.add_argument("--tiers", type=lambda value: tuple(part.strip() for part in value.split(",") if part.strip()), default=tuple(tier.name for tier in DEFAULT_TIERS))
     parser.add_argument("--low-speed-deg-s", type=lambda value: _parse_int_list(value, "low-speed-deg-s"), default=(2, 4, 8))
     parser.add_argument("--low-speed-amplitude-deg", type=int, default=3)
@@ -726,6 +964,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.repetitions < 1 or args.repetitions > 5:
         parser.error("repetitions must be 1..5")
+    if args.max_runs < 1 or args.max_runs > 1000:
+        parser.error("max-runs must be 1..1000")
     if any(abs(amplitude) < 1 or abs(amplitude) > 10 for amplitude in args.amplitudes_deg):
         parser.error("amplitudes must remain within 1..10 degrees")
     if args.poll_period_ms < 5 or args.poll_period_ms > 100:
@@ -764,25 +1004,24 @@ def main() -> int:
     _write_json(manifest_path, manifest)
     if not args.execute:
         print(f"dry-run only; manifest: {manifest_path}")
-        print("To run under direct human supervision, repeat with --execute --confirm-hardware --port <PORT>.")
+        print("To run only the first movement under direct human supervision, repeat with --execute --confirm-hardware --max-runs 1 --port <PORT>.")
         print(f"The first proposed movement is: {_command_for(planned[0])}")
         return 0
-    if manifest_path.exists() and manifest.get("status") == "planned":
-        # The manifest was just created by this invocation. Existing raw logs
-        # are still rejected individually by _capture_command.
-        pass
+    exit_code = 0
     try:
         _run_hardware(args, output_dir, manifest, groups)
     except SafetyGateAbort as error:
         print(f"ABORTED: {error}", file=sys.stderr)
+        exit_code = 2
     except KeyboardInterrupt:
         print("ABORTED: user interrupt", file=sys.stderr)
+        exit_code = 130
     finally:
         if manifest.get("runs"):
             report = _analyze_manifest(output_dir, manifest_path, max_load_raw=args.max_load_raw)
             print(json.dumps(report["summary"], indent=2))
             print(f"report: {output_dir / 'dynamics_report.json'}")
-    return 0
+    return exit_code
 
 
 if __name__ == "__main__":

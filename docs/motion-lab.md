@@ -148,22 +148,39 @@ joint high-rate feedback, low-speed probes, and a separate experiment-5
 reversal lost-motion proxy. It prints the exact first command before any
 hardware action.
 
-Only a human-supervised invocation may move the arm:
+Only a human-supervised invocation may move the arm. The first invocation is
+strictly bounded to one movement:
 
 ```bash
 python3 tools/motion_lab/characterize_dynamics.py \
   --execute --confirm-hardware --port "$RIG_PORT" \
   --output-dir backups/motion-lab-dynamics-YYYY-MM-DD \
-  --joint 2
+  --joint 2 --max-runs 1
 ```
+
+The harness is on the reviewed firmware branch. If the parent repository still
+has its unchanged submodule checkout, select the branch first:
+
+```bash
+git fetch origin feat/scs009-dynamics-characterization
+git switch feat/scs009-dynamics-characterization
+```
+
+The default execution limit is also one movement. Increase `--max-runs` only
+after reviewing the previous capture; the plan itself remains deterministic
+and begins with the gentle J2 `+3°` condition before low-speed, reversal, or
+faster tiers.
 
 The first planned movement is a small J2 `+3` degree endpoint using
 `mlab run 4 2 2 3 3000 0 8 30 250`, followed by a one-second hold and a
-return. The harness stops before the next tier if stale feedback, age,
-voltage, load, or tracking gates fail. Raw UART files are immutable and are
-hashed in `manifest.json`; derived `normalized.csv` and `dynamics_report.json`
-retain the firmware SHA and experiment parameters. `fb_speed_raw` is reported
-as a raw servo value, not converted into calibrated angular velocity.
+return. Before it, the harness requires parseable status for IDs 1–5, a
+completed read-only `mlab params` snapshot, and an acknowledged voltage reply.
+It stops before any later movement if preflight fails. Raw UART files are
+immutable and are hashed in `manifest.json`; derived `normalized.csv` and
+`dynamics_report.json` retain the firmware SHA and experiment parameters.
+Voltage is compared with the observed ~8 V device baseline, not presented as a
+validated electrical safety range. Raw load and speed values remain
+observational diagnostics, not calibrated physical limits.
 
 To analyze a prior capture directory without touching hardware:
 

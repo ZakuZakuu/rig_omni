@@ -4,13 +4,25 @@
 from __future__ import annotations
 
 import math
+import json
+import tempfile
 from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import characterize_dynamics as dynamics  # noqa: E402
 from characterize_dynamics import (  # noqa: E402
+    SafetyGateAbort,
+    _build_plan,
+    _build_parser,
+    _command_for,
+    _execution_entries,
+    _initial_manifest,
     _local_polynomial_velocity,
+    _preflight_decision,
     _reversal_proxy,
+    _run_hardware,
+    _safety_reasons,
     analyze_run,
 )
 from analyze_stutter import parse_capture  # noqa: E402
@@ -36,6 +48,79 @@ def _row(index: int, command: float, feedback: float) -> dict[str, float]:
     }
 
 
+def _status_capture() -> str:
+    return "MLAB_SERVO_STATUS,id,error_hex,last_error_hex,last_error_ts_ms,error_count,fb_pos,fb_speed_raw,fb_load_raw,stale\n" + "\n".join(
+        f"MLAB_SERVO_STATUS,{servo_id},00,00,0,0,512,0,100,0" for servo_id in range(1, 6)
+    ) + "\n"
+
+
+def _params_capture() -> str:
+    return "SCS009_PARAM dump: read-only; no EEPROM unlock/write performed\nSCS009_PARAM,1,p_coefficient,0x15,1,18,100\nSCS009_PARAM dump: complete\n"
+
+
+def _voltage_capture(voltage: float = 8.0) -> str:
+    return f"MLAB_VOLTAGE,ts_ms=100,id=1,voltage_v={voltage:.2f},request_sent=1\n"
+
+
+def _mlab_capture(feedback: float) -> str:
+    header = "MLAB,ts_ms,experiment,trajectory,elapsed_ms,total_ms,cmd_deg[5],cmd_pos[5],fb_pos[5],fb_speed_raw[5],fb_load_raw[5],fb_ts_ms[5],fb_age_ms[5],fb_stale[5],servo_voltage_v,speed_cmd_raw\n"
+    rows = []
+    for timestamp, elapsed, command, position in ((100, 0, 0, 0), (150, 50, 1, feedback)):
+        command_array = ["0", "0", str(command), "0", "0"]
+        position_array = ["0", "0", str(position), "0", "0"]
+        arrays = [
+            "|".join(command_array),
+            "|".join(command_array),
+            "|".join(position_array),
+            "0|0|0|0|0",
+            "100|100|100|100|100",
+            "|".join([str(timestamp)] * 5),
+            "0|0|0|0|0",
+            "0|0|0|0|0",
+            "8.0",
+            "1|0|0|0|0",
+        ]
+        rows.append(f"MLAB,{timestamp},4,2,{elapsed},600," + ",".join(arrays))
+    return header + "\n".join(rows) + "\n"
+
+
+def _hardware_args(output_dir: Path, max_runs: int = 1):
+    return _build_parser().parse_args([
+        "--execute", "--confirm-hardware", "--port", "/dev/test",
+        "--output-dir", str(output_dir), "--joint", "2", "--max-runs", str(max_runs),
+        "--repetitions", "1",
+    ])
+
+
+def _run_with_fake_capture(args, manifest, groups, *, status_text: str, movement_feedback: float | None):
+    calls: list[str] = []
+    original = dynamics._capture_command
+
+    def fake_capture(_port, command, output, _duration_ms, **_kwargs):
+        calls.append(command)
+        if command == "mlab status":
+            output.write_text(status_text, encoding="utf-8")
+        elif command == "mlab params":
+            output.write_text(_params_capture(), encoding="utf-8")
+        elif command == "mlab voltage":
+            output.write_text(_voltage_capture(), encoding="utf-8")
+        elif command.startswith("mlab run"):
+            output.write_text(_mlab_capture(movement_feedback or 0.0), encoding="utf-8")
+        else:
+            output.write_text("ack\n", encoding="utf-8")
+
+    dynamics._capture_command = fake_capture
+    try:
+        error = None
+        try:
+            dynamics._run_hardware(args, args.output_dir, manifest, groups)
+        except SafetyGateAbort as caught:
+            error = caught
+        return calls, error
+    finally:
+        dynamics._capture_command = original
+
+
 def main() -> int:
     capture = Path(__file__).with_name(".synthetic-mlab-capture.log")
     rows_for_capture = [
@@ -54,6 +139,73 @@ def main() -> int:
         assert parsed[1]["speed_cmd_raw"] == 1.0
     finally:
         capture.unlink()
+
+    plan_args = _build_parser().parse_args(["--joint", "2", "--repetitions", "1"])
+    plan_groups, planned = _build_plan(plan_args)
+    assert _command_for(planned[0]) == "mlab run 4 2 2 3 3000 0 8 30 250"
+    assert planned[0]["tier"] == "gentle"
+    assert planned[0]["amplitude_deg"] == 3
+    assert len(_execution_entries(plan_groups, 1)) == 1
+    assert len(_execution_entries(plan_groups, 2)) == 2
+
+    with tempfile.TemporaryDirectory(prefix="rig-dynamics-readiness-") as directory:
+        output_dir = Path(directory)
+        status_path = output_dir / "status.log"
+        params_path = output_dir / "params.log"
+        voltage_path = output_dir / "voltage.log"
+        status_path.write_text(_status_capture(), encoding="utf-8")
+        params_path.write_text(_params_capture(), encoding="utf-8")
+        voltage_path.write_text(_voltage_capture(), encoding="utf-8")
+        decision = _preflight_decision(status_path, params_path, voltage_path)
+        assert decision["passed"]
+        voltage_path.write_text(_voltage_capture(7.0), encoding="utf-8")
+        voltage_decision = _preflight_decision(status_path, params_path, voltage_path)
+        assert not voltage_decision["passed"]
+        assert any("baseline" in reason for reason in voltage_decision["reasons"])
+        status_path.write_text(_status_capture().replace(",00,00,0,0,512", ",01,00,0,0,512", 1), encoding="utf-8")
+        status_decision = _preflight_decision(status_path, params_path, voltage_path)
+        assert not status_decision["passed"]
+        assert any("status" in reason for reason in status_decision["reasons"])
+
+    # The first 3-degree run must use a meaningful small-motion tracking guard,
+    # rather than the old 12-degree floor.
+    first_run_rows = [_row(index, command, feedback) for index, (command, feedback) in enumerate(((0, 0), (4, 50)))]
+    first_run_metadata = {
+        "run": "first", "tier": "gentle", "experiment": 4, "joint": 2,
+        "direction": "positive", "amplitude_deg": 3, "transition_ms": 3000,
+        "duration_ms": 7000, "hold_ms": 1000, "repetition": 1,
+    }
+    first_metric, _ = analyze_run(first_run_rows, first_run_metadata)
+    first_reasons = _safety_reasons(first_metric, 3000.0)
+    assert first_metric["tracking_error_guard_deg"] < 12.0
+    assert any("small-motion sanity guard" in reason for reason in first_reasons)
+
+    with tempfile.TemporaryDirectory(prefix="rig-dynamics-preflight-") as directory:
+        output_dir = Path(directory)
+        args = _hardware_args(output_dir)
+        groups, planned = _build_plan(args)
+        manifest = _initial_manifest(args, planned)
+        calls, error = _run_with_fake_capture(
+            args, manifest, groups, status_text="garbled status\n", movement_feedback=None
+        )
+        assert isinstance(error, SafetyGateAbort)
+        assert not any(command.startswith("mlab run") for command in calls)
+        assert "mlab stop" in calls and "mlab poll off" in calls and "mlab comp off" in calls
+        persisted = json.loads((output_dir / "manifest.json").read_text(encoding="utf-8"))
+        assert not persisted["preflight"]["decision"]["passed"]
+
+    with tempfile.TemporaryDirectory(prefix="rig-dynamics-run-abort-") as directory:
+        output_dir = Path(directory)
+        args = _hardware_args(output_dir)
+        groups, planned = _build_plan(args)
+        manifest = _initial_manifest(args, planned)
+        calls, error = _run_with_fake_capture(
+            args, manifest, groups, status_text=_status_capture(), movement_feedback=100.0
+        )
+        assert isinstance(error, SafetyGateAbort)
+        movement_calls = [command for command in calls if command.startswith("mlab run")]
+        assert movement_calls == ["mlab run 4 2 2 3 3000 0 8 30 250"]
+        assert "mlab stop" in calls and "mlab poll off" in calls and "mlab comp off" in calls
 
     rows = [_row(index, command, feedback) for index, (command, feedback) in enumerate(
         ((0, 0), (4, 2), (8, 6), (12, 10), (16, 15), (16, 16), (16, 16), (16, 16), (0, 1), (0, 0))

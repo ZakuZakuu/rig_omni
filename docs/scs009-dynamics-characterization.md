@@ -43,27 +43,44 @@ The first proposed hardware command is:
 mlab run 4 2 2 3 3000 0 8 30 250
 ```
 
+This harness lives on the PR branch, not the parent repository's unchanged
+submodule SHA. Before a hardware run, check out the reviewed branch in the
+firmware submodule:
+
+```bash
+git fetch origin feat/scs009-dynamics-characterization
+git switch feat/scs009-dynamics-characterization
+```
+
 It moves J2 +3° over 3 seconds, holds for 1 second, and returns. The arm must
 be supervised with hands and cables clear. The tool will not issue this command
 unless invoked with both `--execute` and `--confirm-hardware`.
 
 ## Reproduction and analysis
 
-Create a plan without hardware access:
+Create a plan without hardware access (the default execution limit is one
+movement):
 
 ```bash
 python3 tools/motion_lab/characterize_dynamics.py \
   --manifest-only --output-dir backups/motion-lab-dynamics-YYYY-MM-DD --joint 2
 ```
 
-Run the plan only from a supervised terminal after reviewing its printed
-commands:
+The deterministic plan always starts with the gentle J2 `+3°` condition. Run
+only that first condition from a supervised terminal after reviewing the
+printed plan:
 
 ```bash
 python3 tools/motion_lab/characterize_dynamics.py \
   --execute --confirm-hardware --port "$RIG_PORT" \
-  --output-dir backups/motion-lab-dynamics-YYYY-MM-DD --joint 2
+  --output-dir backups/motion-lab-dynamics-YYYY-MM-DD --joint 2 --max-runs 1
 ```
+
+`--max-runs 1` is the recommended first hardware invocation. The harness
+performs read-only status, parameter, and voltage preflight, executes exactly
+one movement, cleans up polling/Motion-Lab ownership, analyzes that capture,
+and returns control. A larger `--max-runs N` is available only after the
+previous captures have been reviewed.
 
 Existing captures can be re-analyzed without opening a port:
 
@@ -73,9 +90,10 @@ python3 tools/motion_lab/characterize_dynamics.py \
 ```
 
 Each output directory contains immutable raw UART logs, a `manifest.json` with
-firmware SHA/branch, protocol and parameters, SHA-256 hashes for raw captures,
+firmware SHA/branch, protocol and parameters, hashed preflight snapshots and
+the persisted pass/fail decision, SHA-256 hashes for movement captures,
 `normalized.csv`, and `dynamics_report.json`. Cleanup sends `mlab stop`,
-`mlab poll off`, and `mlab comp off` even when a run is aborted.
+`mlab poll off`, and `mlab comp off` even when preflight or a run is aborted.
 
 ## Metrics and definitions
 
@@ -97,9 +115,13 @@ The report contains, per run and direction:
 
 Raw `fb_speed_raw` is retained and compared but is not treated as calibrated
 angular velocity. Physical acceleration and jerk are not inferred from sparse,
-quantized feedback. A stale sample, unexpected status error, unsafe target,
-abnormal configured load, voltage outside the existing 7.5–8.8 V policy, or
-unexpected tracking error invalidates the current tier and stops progression.
+quantized feedback. A stale sample, unexpected status error, unsafe target, or
+unexpected tracking error invalidates the current run and stops progression.
+Voltage is preserved and compared against the previously observed ~8 V device
+baseline; the deviation check is an observational preflight/run guard and is
+not a validated SCS009 operating or electrical safety range. `fb_load_raw` is
+also only a provisional anomaly diagnostic because its physical encoding is not
+independently validated.
 
 ## Results
 
