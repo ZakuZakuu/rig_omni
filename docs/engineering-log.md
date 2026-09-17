@@ -928,3 +928,31 @@ direction difference by eye. No new post-run human visual description was
 available in the terminal record, so visibility, smoothness, sound/vibration,
 and subjective comparison of this run remain unclassified rather than
 inferred.
+
+## 2026-09-17 — Nano printf telemetry correction and read-only revalidation
+
+The Creature Stream firmware was rebuilt from `00b291ad98879be09c59103e07aa1dbabfc31526`
+on `feat/creature-stream-runtime` and flashed using ESP-IDF 5.5.3. Device ELF
+SHA-256:
+`3a0a8b98101024d3ea0c0d2888698812f6bb18f4982f0e832b9070adfa399c2a`.
+
+The preceding malformed `CREATURE_STATE`/`MLAB_SERVO_STATUS` lines were caused
+by `CONFIG_LIBC_NEWLIB_NANO_FORMAT=y`: Nano `printf` does not implement the
+64-bit integer formatters used for diagnostic timestamps. Internal watchdog,
+freshness, and feedback timestamps remain 64-bit. Console timestamps now use
+explicit `uint32` millisecond projections and `%lu`; the source tree has a
+regression guard against reintroducing `%ll`/`PRI*64` formatters in the ARM
+console sources.
+
+After flashing, only read-only monitor commands were sent (`mlab caps`,
+`mlab status`, `creature caps`, and `creature state`, with a repeated state
+sample). No `creature take`, target, Motion Lab command, or physical movement
+was performed. The device reported `MLAB_CAPS` protocol 2 with experiments
+`0|1|2|3|4|5` and `reversal=1`; `CREATURE_CAPS` reported five joints. The
+corrected state lines contained numeric `last_target_ms=0`, five feedback
+positions/mdeg values, `fb_stale=0|0|0|0|0`, `servo_error=0|0|0|0|0`, and
+`voltage_v=7.90`. Feedback ages remained finite (224|162|69|62|1 ms in the
+first sample and 94|74|54|12|135 ms in the repeat captured after boot settling),
+so the earlier shifted fields and `0.00 V` were formatting corruption rather
+than evidence of a new actuator or supply fault. The monitor exited cleanly
+and `/dev/ttyACM0` was free afterward.
