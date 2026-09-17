@@ -939,6 +939,9 @@ static const int64_t kWiggleDurUs = 1000000;       // 摆动 1s
 static const int64_t kWiggleCooldownUs = 1000000;  // 冷却 1s
 
 void touch_wiggle_trigger() {
+    if (creature_stream_is_owned()) {
+        return;
+    }
     int64_t now = esp_timer_get_time();
     if (now < wiggle_cooldown_until_us) {
         ESP_LOGI(TAG, "Touch wiggle: cooldown");
@@ -1011,6 +1014,7 @@ void arm_ik_update(){
 // ============================================================
 
 void teach_enter() {
+    if (creature_stream_is_owned()) return;
     if (teach_state != TEACH_IDLE) return;
     if (calibrate_mode == 1) return;  // 标定中不进入示教
 
@@ -1073,6 +1077,7 @@ void teach_cancel() {
 }
 
 int teach_play() {
+    if (creature_stream_is_owned()) return -1;
     if (!teach_has_recording || teach_frames == nullptr || teach_frame_count == 0) {
         ESP_LOGW(TAG, "Teach play: no recording available");
         return -1;
@@ -1112,6 +1117,10 @@ void xgo_control() {
     // targets at a bounded cadence; no IK, idle offset, or preset action may
     // write a competing command while the stream is owned.
     if (creature_stream_is_owned()) {
+        // Cancel any preset request that arrived through MCP while the stream
+        // owns the joints; it must not replay unexpectedly after release.
+        Action_ID = 0;
+        actionLoop_FLAG = 0;
         const uint32_t now_us = static_cast<uint32_t>(esp_timer_get_time());
         creature_stream_update(now_us);
         if (creature_stream_should_send(now_us)) {

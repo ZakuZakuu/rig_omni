@@ -578,6 +578,10 @@ private:
     }
 
     void Calibrate(int mode) {
+        if (creature_stream_is_owned()) {
+            ESP_LOGW(TAG, "Calibration request refused while Creature Stream owns the joints");
+            return;
+        }
         short mid_pos[] = {M_N/2, M_N/2, M_N/2, M_N/2, M_N/2};
         if(mode==1 && calibrate_mode==0){
             //printf("Enter calibration mode\n");
