@@ -732,3 +732,54 @@ run, so smoothness, sound/vibration, and subjective direction visibility are
 intentionally left unclassified rather than inferred. No formal +3° run,
 negative conditioning, retry, or EEPROM/PID/dead-zone/startup-force change was
 performed.
+
+## 2026-09-17 — Conditioned J2 +3° gate stopped before formal run (c1)
+
+The host firmware checkout was at
+`feat/scs009-dynamics-characterization` commit
+`c91de1ded8b553ca3b03953f7a91b7e28782cca0`; the only difference from the
+flashed runtime commit was the engineering-log documentation commit. The
+device was not reflashed. ESP-IDF monitor readiness was rechecked first: the
+device reported protocol 2, experiments `0|1|2|3|4|5`, `reversal=1`, all five
+servos online, zero errors/stale flags, and ELF SHA
+`ec3fd0859ea989e336c6024a2ca766770448f8edabe1d1767a1d0dcccdb4986c`.
+
+The immutable capture is under
+`backups/motion-lab-conditioned-j2-plus3-2026-09-17-c1/`. Exactly one
+conditioning command was attempted:
+
+```text
+mlab run 5 2 2 5 2500 0 8 30 250
+```
+
+The generated command remained faithful to the corrected profile: requested
+±17.0667 counts (±5°), held +17 counts (+4.9805°) and −18 counts (−5.2734°),
+with endpoint errors 0.0667 and 0.9333 counts respectively. Feedback reached
+only +4 counts (+1.1719°) at the positive endpoint and −20 counts (−5.8594°)
+at the negative endpoint (raw negative peak −21 counts). The settled return
+was +1 count (+0.2930°) from the starting feedback count.
+
+Conditioning telemetry remained healthy: 100% valid rows, 163 unique samples
+at 17.12 Hz, feedback-age P50/P95/max 3/17/78 ms, stale fraction 0%, voltage
+7.9–8.1 V, and peak raw load 1303. Raw speed values remain uncalibrated; the
+runtime `speed_cmd_raw` field was 350. The health gate failed only because the
+positive feedback excursion (4 counts) was below 50% of the actual +17-count
+command endpoint (`4.00 < 8.50`).
+
+The harness stopped fail-closed before the formal command: the manifest records
+`status=conditioning_failed`, `physical_motion_started=true`,
+`conditioning_passed=false`, `formal_run_started=false`, and
+`executed_runs=0`. No `mlab run 4 ...` command was sent. Cleanup completed
+(`mlab stop`, polling off, compensation off), and the serial port was released.
+The corrected conditioning trajectory itself is suitable and command-faithful,
+but this run shows that the positive-direction conditioning response is not
+repeatable: the prior corrected c1 conditioning capture reached +10 counts
+under the same nominal protocol, whereas this capture reached +4 counts. A
+conditioned formal +3° comparison against cold r1/r2 is therefore not yet
+valid; the next hypothesis is direction-dependent/stiction or intermittent
+actuator response, not command-profile distortion.
+
+No human visual observation was supplied in the terminal record, so visibility,
+smoothness, sound/vibration, and return quality are left unclassified. No
+formal +3° run, retry, parameter tuning, EEPROM write, or additional physical
+motion was performed.
