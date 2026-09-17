@@ -37,6 +37,7 @@
 #include "xgo_action.h"
 #include "idle_motion.h"
 #include "motion_lab.h"
+#include "creature_stream.h"
 #include "imu.h"
 
 #define TAG "ARM"
@@ -59,7 +60,9 @@ MotionLabConfig MotionLabDefaultConfig() {
 }
 
 MotionLabStartResult StartMotionLab(const MotionLabConfig& config) {
-    if (calibrate_mode == 1 || teach_state != TEACH_IDLE) return kMotionLabInvalidConfig;
+    if (calibrate_mode == 1 || teach_state != TEACH_IDLE || creature_stream_is_owned()) {
+        return kMotionLabInvalidConfig;
+    }
 
     int16_t feedback[MOTOR_NUM];
     int16_t zero[MOTOR_NUM];
@@ -124,6 +127,89 @@ void PrintMotionLabCapabilities() {
            "project=%s,version=%s,build_date=%s,build_time=%s,elf_sha256=%s\r\n",
            app_desc->project_name, app_desc->version, app_desc->date,
            app_desc->time, elf_sha256);
+}
+
+void PrintCreatureStreamCapabilities() {
+    const esp_app_desc_t* app_desc = esp_app_get_description();
+    char elf_sha256[sizeof(app_desc->app_elf_sha256) * 2 + 1] = {};
+    if (app_desc != nullptr) {
+        for (size_t i = 0; i < sizeof(app_desc->app_elf_sha256); ++i) {
+            snprintf(elf_sha256 + i * 2, sizeof(elf_sha256) - i * 2, "%02x",
+                     app_desc->app_elf_sha256[i]);
+        }
+    }
+    printf("CREATURE_CAPS,protocol=%d,joints=%d,units=mdeg,max_stream_hz=%d,watchdog_ms=%d,"
+           "project=%s,version=%s,elf_sha256=%s\r\n",
+           CREATURE_STREAM_PROTOCOL, CREATURE_STREAM_JOINTS, CREATURE_STREAM_MAX_HZ,
+           CREATURE_STREAM_WATCHDOG_MS,
+           app_desc != nullptr ? app_desc->project_name : "rig-arm",
+           app_desc != nullptr ? app_desc->version : "unknown",
+           app_desc != nullptr ? elf_sha256 : "unavailable");
+}
+
+void PrintCreatureStreamHelp() {
+    printf("CREATURE_CONSOLE commands:\r\n"
+           "  creature caps\r\n"
+           "  creature take\r\n"
+           "  creature target <seq> <q0_mdeg> <q1_mdeg> <q2_mdeg> <q3_mdeg> <q4_mdeg>\r\n"
+           "  creature state\r\n"
+           "  creature stop\r\n"
+           "  creature release\r\n"
+           "  creature help\r\n");
+}
+
+void PrintCreatureStreamState(uint32_t now_ms) {
+    CreatureStreamSnapshot snapshot = {};
+    creature_stream_get_snapshot(&snapshot, now_ms);
+    printf("CREATURE_STATE,owner=%s,holding=%d,timed_out=%d,seq_valid=%d,last_seq=%lu,"
+           "target_age_ms=%lu,last_target_ms=%lu,target_mdeg=%ld|%ld|%ld|%ld|%ld,"
+           "target_pos=%d|%d|%d|%d|%d,fb_pos=%d|%d|%d|%d|%d,"
+           "fb_age_ms=%lu|%lu|%lu|%lu|%lu,fb_stale=%d|%d|%d|%d|%d,"
+           "servo_error=%d|%d|%d|%d|%d,voltage_v=%.2f\r\n",
+           snapshot.owned ? (snapshot.timed_out ? "timed_out" :
+                              (snapshot.holding ? "hold" : "active")) : "released",
+           snapshot.holding ? 1 : 0, snapshot.timed_out ? 1 : 0,
+           snapshot.sequence_valid ? 1 : 0,
+           static_cast<unsigned long>(snapshot.last_sequence),
+           static_cast<unsigned long>(snapshot.target_age_ms),
+           static_cast<unsigned long>(snapshot.last_target_ms),
+           static_cast<long>(snapshot.target_mdeg[0]), static_cast<long>(snapshot.target_mdeg[1]),
+           static_cast<long>(snapshot.target_mdeg[2]), static_cast<long>(snapshot.target_mdeg[3]),
+           static_cast<long>(snapshot.target_mdeg[4]),
+           snapshot.target_pos[0], snapshot.target_pos[1], snapshot.target_pos[2],
+           snapshot.target_pos[3], snapshot.target_pos[4],
+           motor[0].FbPos, motor[1].FbPos, motor[2].FbPos, motor[3].FbPos, motor[4].FbPos,
+           static_cast<unsigned long>(motor[0].FbTimestampMs == 0 || now_ms < motor[0].FbTimestampMs ? UINT32_MAX : now_ms - motor[0].FbTimestampMs),
+           static_cast<unsigned long>(motor[1].FbTimestampMs == 0 || now_ms < motor[1].FbTimestampMs ? UINT32_MAX : now_ms - motor[1].FbTimestampMs),
+           static_cast<unsigned long>(motor[2].FbTimestampMs == 0 || now_ms < motor[2].FbTimestampMs ? UINT32_MAX : now_ms - motor[2].FbTimestampMs),
+           static_cast<unsigned long>(motor[3].FbTimestampMs == 0 || now_ms < motor[3].FbTimestampMs ? UINT32_MAX : now_ms - motor[3].FbTimestampMs),
+           static_cast<unsigned long>(motor[4].FbTimestampMs == 0 || now_ms < motor[4].FbTimestampMs ? UINT32_MAX : now_ms - motor[4].FbTimestampMs),
+           motor[0].FbStale ? 1 : 0, motor[1].FbStale ? 1 : 0, motor[2].FbStale ? 1 : 0,
+           motor[3].FbStale ? 1 : 0, motor[4].FbStale ? 1 : 0,
+           motor[0].FbError, motor[1].FbError, motor[2].FbError, motor[3].FbError,
+           motor[4].FbError, servo_voltage);
+}
+
+void PrintCreatureStreamAck(const char* command, CreatureStreamResult result,
+                            uint32_t now_ms) {
+    CreatureStreamSnapshot snapshot = {};
+    creature_stream_get_snapshot(&snapshot, now_ms);
+    printf("CREATURE_ACK,command=%s,result=%s,owner=%s,seq_valid=%d,last_seq=%lu,"
+           "target_age_ms=%lu,target_mdeg=%ld|%ld|%ld|%ld|%ld,feedback_fresh=%d\r\n",
+           command, creature_stream_result_string(result),
+           snapshot.owned ? (snapshot.timed_out ? "timed_out" :
+                              (snapshot.holding ? "hold" : "active")) : "released",
+           snapshot.sequence_valid ? 1 : 0,
+           static_cast<unsigned long>(snapshot.last_sequence),
+           static_cast<unsigned long>(snapshot.target_age_ms),
+           static_cast<long>(snapshot.target_mdeg[0]), static_cast<long>(snapshot.target_mdeg[1]),
+           static_cast<long>(snapshot.target_mdeg[2]), static_cast<long>(snapshot.target_mdeg[3]),
+           static_cast<long>(snapshot.target_mdeg[4]),
+           motor[0].FbTimestampMs != 0 && !motor[0].FbStale &&
+           motor[1].FbTimestampMs != 0 && !motor[1].FbStale &&
+           motor[2].FbTimestampMs != 0 && !motor[2].FbStale &&
+           motor[3].FbTimestampMs != 0 && !motor[3].FbStale &&
+           motor[4].FbTimestampMs != 0 && !motor[4].FbStale ? 1 : 0);
 }
 
 }  // namespace
@@ -1034,6 +1120,7 @@ public:
         imu_init();
         rig_arm_ik_init(&arm_ik, 0.05);
         idle_motion_init();
+        creature_stream_init();
         // XGO 控制任务
         xTaskCreatePinnedToCore([](void* arg) {
             (void)arg;
@@ -1163,6 +1250,42 @@ public:
                 line[line_length] = '\0';
                 line_length = 0;
 
+                const uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+                if (strcmp(line, "creature help") == 0) {
+                    PrintCreatureStreamHelp();
+                    continue;
+                }
+                if (strcmp(line, "creature caps") == 0) {
+                    PrintCreatureStreamCapabilities();
+                    continue;
+                }
+                if (strcmp(line, "creature state") == 0) {
+                    PrintCreatureStreamState(now_ms);
+                    continue;
+                }
+                if (strcmp(line, "creature take") == 0) {
+                    PrintCreatureStreamAck("take", creature_stream_take(now_ms), now_ms);
+                    continue;
+                }
+                if (strcmp(line, "creature stop") == 0) {
+                    PrintCreatureStreamAck("stop", creature_stream_stop(now_ms), now_ms);
+                    continue;
+                }
+                if (strcmp(line, "creature release") == 0) {
+                    PrintCreatureStreamAck("release", creature_stream_release(), now_ms);
+                    continue;
+                }
+                if (strncmp(line, "creature target", strlen("creature target")) == 0) {
+                    uint32_t sequence = 0;
+                    int32_t target_mdeg[CREATURE_STREAM_JOINTS] = {};
+                    const bool parsed = creature_stream_parse_target(line, &sequence, target_mdeg);
+                    const CreatureStreamResult result = parsed
+                        ? creature_stream_accept_target(sequence, target_mdeg, now_ms)
+                        : kCreatureStreamMalformed;
+                    PrintCreatureStreamAck("target", result, now_ms);
+                    continue;
+                }
+
                 if (strcmp(line, "mlab help") == 0) {
                     PrintMotionLabConsoleHelp();
                     continue;
@@ -1174,7 +1297,9 @@ public:
                 if (strcmp(line, "mlab idle off") == 0 ||
                     strcmp(line, "mlab idle on") == 0 ||
                     strcmp(line, "mlab idle status") == 0) {
-                    if (motion_lab_is_active()) {
+                    if (creature_stream_is_owned() && strcmp(line, "mlab idle status") != 0) {
+                        printf("MLAB_IDLE busy; release Creature Stream before changing idle motion\r\n");
+                    } else if (motion_lab_is_active()) {
                         printf("MLAB_IDLE busy; stop Motion Lab before changing idle motion\r\n");
                     } else if (strcmp(line, "mlab idle status") == 0) {
                         printf("MLAB_IDLE enabled=%d\r\n", idle_motion_is_enabled() ? 1 : 0);

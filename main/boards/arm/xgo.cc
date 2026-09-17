@@ -16,6 +16,7 @@
 #include "xgo_action.h"
 #include "idle_motion.h"
 #include "motion_lab.h"
+#include "creature_stream.h"
 #include "application.h"
 #include "board.h"
 #include "display.h"
@@ -449,7 +450,7 @@ bool is_high_rate_id(uint8_t id) {
 }  // namespace
 
 bool xgo_tune_apply(XgoTuneParameter parameter, uint16_t raw_value) {
-    if (motion_lab_is_active() || teach_state != TEACH_IDLE ||
+    if (creature_stream_is_owned() || motion_lab_is_active() || teach_state != TEACH_IDLE ||
         parameter < XGO_TUNE_DEADBAND || parameter > XGO_TUNE_STARTUP_FORCE) {
         return false;
     }
@@ -469,7 +470,7 @@ bool xgo_tune_apply(XgoTuneParameter parameter, uint16_t raw_value) {
 }
 
 bool xgo_tune_restore_factory() {
-    if (motion_lab_is_active() || teach_state != TEACH_IDLE) return false;
+    if (creature_stream_is_owned() || motion_lab_is_active() || teach_state != TEACH_IDLE) return false;
 
     servo_parameter_dump_active = true;
     reset_feedback_request();
@@ -564,7 +565,7 @@ static bool ReadServoParameter(uint8_t read_id, const ServoParameterSpec& spec) 
 }
 
 void xgo_dump_factory_parameters() {
-    if (motion_lab_is_active() || teach_state != TEACH_IDLE) {
+    if (creature_stream_is_owned() || motion_lab_is_active() || teach_state != TEACH_IDLE) {
         printf("SCS009_PARAM dump: refused while motion/teach is active\r\n");
         return;
     }
@@ -1105,6 +1106,21 @@ void xgo_control() {
     static uint32_t counter2 = 0;
 
     counter2++;
+
+    // Creature Stream has exclusive ownership between the parameter-dump
+    // guard above and Motion Lab. It forwards already validated joint-space
+    // targets at a bounded cadence; no IK, idle offset, or preset action may
+    // write a competing command while the stream is owned.
+    if (creature_stream_is_owned()) {
+        const uint32_t now_us = static_cast<uint32_t>(esp_timer_get_time());
+        creature_stream_update(now_us);
+        if (creature_stream_should_send(now_us)) {
+            short stream_pos[MOTOR_NUM] = {};
+            creature_stream_get_target_pos(stream_pos);
+            SetMotorPos(stream_pos, motor_speed);
+        }
+        return;
+    }
 
     // Motion Lab has exclusive ownership of direct joint commands. It is a
     // diagnostic path: no IK, idle offsets, or preset Action_ID values may
