@@ -68,16 +68,19 @@ bool all_feedback_healthy(uint64_t now_us) {
 }
 
 int32_t position_to_mdeg(int16_t position, int index) {
-    const float degrees = (static_cast<float>(position) - motor[index].ZeroPos) * M_A / M_N;
-    return static_cast<int32_t>(lroundf(degrees * 1000.0f));
+    const float servo_degrees =
+        (static_cast<float>(position) - motor[index].ZeroPos) * M_A / M_N;
+    const int32_t servo_mdeg = static_cast<int32_t>(lroundf(servo_degrees * 1000.0f));
+    return rig_arm_servo_to_model_mdeg(servo_mdeg, index);
 }
 
 bool mdeg_to_position(int32_t mdeg, int index, int16_t* out_position) {
     if (out_position == nullptr || index < 0 || index >= MOTOR_NUM) return false;
     const float radians = static_cast<float>(mdeg) * PI / 180000.0f;
     if (!rig_arm_joint_within_limits(index, radians)) return false;
+    const int32_t servo_mdeg = rig_arm_model_to_servo_mdeg(mdeg, index);
     const float position = static_cast<float>(motor[index].ZeroPos) +
-        (static_cast<float>(mdeg) / 1000.0f) * M_N / M_A;
+        (static_cast<float>(servo_mdeg) / 1000.0f) * M_N / M_A;
     if (!isfinite(position)) return false;
     const int rounded = static_cast<int>(lroundf(position));
     if (rounded < kStreamMinCount || rounded > kStreamMaxCount) return false;

@@ -29,6 +29,19 @@ extern "C" {
 
 #define RIG_ARM_IK_N 5
 
+/**
+ * Installation direction at the firmware/servo boundary.
+ *
+ * All model-space APIs use the same joint signs as the simulator and PC
+ * Creature Stream.  Only conversion to/from installed-servo angles applies
+ * this mapping: [+1, +1, -1, +1, -1].
+ */
+int8_t rig_arm_installation_direction(int joint);
+int32_t rig_arm_model_to_servo_mdeg(int32_t model_mdeg, int joint);
+int32_t rig_arm_servo_to_model_mdeg(int32_t servo_mdeg, int joint);
+float rig_arm_model_to_servo_deg(float model_deg, int joint);
+float rig_arm_servo_to_model_deg(float servo_deg, int joint);
+
 typedef struct {
     float q_prev[RIG_ARM_IK_N];
     bool has_prev;

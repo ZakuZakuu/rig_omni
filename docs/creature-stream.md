@@ -57,9 +57,13 @@ accepted target transitions `hold → active` and starts the 250 ms watchdog.
 The ACK includes ownership, sequence, target age and feedback freshness.
 
 `CREATURE_STATE` exposes both `fb_pos` (raw absolute SCS009 counts) and
-`fb_mdeg` (the calibrated joint angle relative to each servo's ZeroPos, using
-the same `(FbPos - ZeroPos) * M_A / M_N` conversion as firmware control).
-Host code must use `fb_mdeg` for `q_rad`; raw counts are diagnostic only.
+`fb_mdeg` (the calibrated **model-space** joint angle). The conversion first
+computes the installed-servo angle relative to each servo's `ZeroPos`, then
+applies the authoritative installation mapping `[+1,+1,-1,+1,-1]`. Host code
+must use `fb_mdeg` for `q_rad`; raw counts and installed-servo signs are
+diagnostic/boundary details only. `target_mdeg` uses the same model-space
+convention and is converted back to installed-servo angles only immediately
+before a bus command.
 
 The internal target timestamp remains a 64-bit microsecond value for watchdog
 and freshness calculations. The machine-readable `last_target_ms` field is an

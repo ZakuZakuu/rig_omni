@@ -29,7 +29,9 @@
  constexpr int MAX_ITER_COLD = 60;
  constexpr float POS_TOL = 1e-4f;
  constexpr float ORI_TOL = 5e-3f;
- constexpr float OK_POS = 0.02f;
+constexpr float OK_POS = 0.02f;
+
+constexpr int8_t INSTALLATION_DIRECTION[N] = {1, 1, -1, 1, -1};
  
  constexpr float LIM[N][2] = {
      {-2.62f, 2.62f},
@@ -492,7 +494,31 @@
      if (best_oe) *best_oe = bo;
  }
  
- }  // namespace
+}  // namespace
+
+int8_t rig_arm_installation_direction(int joint) {
+    return (joint >= 0 && joint < N) ? INSTALLATION_DIRECTION[joint] : 0;
+}
+
+int32_t rig_arm_model_to_servo_mdeg(int32_t model_mdeg, int joint) {
+    const int8_t direction = rig_arm_installation_direction(joint);
+    return direction == 0 ? 0 : static_cast<int32_t>(direction * static_cast<int64_t>(model_mdeg));
+}
+
+int32_t rig_arm_servo_to_model_mdeg(int32_t servo_mdeg, int joint) {
+    const int8_t direction = rig_arm_installation_direction(joint);
+    return direction == 0 ? 0 : static_cast<int32_t>(direction * static_cast<int64_t>(servo_mdeg));
+}
+
+float rig_arm_model_to_servo_deg(float model_deg, int joint) {
+    const int8_t direction = rig_arm_installation_direction(joint);
+    return direction == 0 ? 0.0f : static_cast<float>(direction) * model_deg;
+}
+
+float rig_arm_servo_to_model_deg(float servo_deg, int joint) {
+    const int8_t direction = rig_arm_installation_direction(joint);
+    return direction == 0 ? 0.0f : static_cast<float>(direction) * servo_deg;
+}
 
 bool rig_arm_joint_within_limits(int joint, float q_rad) {
     return joint >= 0 && joint < RIG_ARM_IK_N && isfinite(q_rad) &&
@@ -572,12 +598,10 @@ float rig_arm_joint_max_limit(int joint) {
      oe = vnorm(e_rot);
  
      memcpy(q_out, q, sizeof(q));
-     //转换角度，考虑安装方向
-     q_out[0] = q[0]*180.0/PI;
-     q_out[1] = q[1]*180.0/PI;
-     q_out[2] = -q[2]*180.0/PI;
-     q_out[3] = q[3]*180.0/PI;
-     q_out[4] = -q[4]*180.0/PI;
+     // Convert model-space IK output only at the installed-servo boundary.
+     for (int i = 0; i < N; ++i) {
+         q_out[i] = rig_arm_model_to_servo_deg(q[i] * 180.0f / PI, i);
+     }
 
      bool ok = pe < OK_POS;
      if (ok) {
