@@ -956,3 +956,31 @@ first sample and 94|74|54|12|135 ms in the repeat captured after boot settling),
 so the earlier shifted fields and `0.00 V` were formatting corruption rather
 than evidence of a new actuator or supply fault. The monitor exited cleanly
 and `/dev/ttyACM0` was free afterward.
+
+## 2026-09-18 — Creature Stream model-coordinate boundary verification
+
+Firmware commit `a55624f` on `feat/creature-stream-runtime` was built with
+ESP-IDF 5.5.3 and flashed from the top-level Stage #9 branch. Device ELF
+SHA-256:
+`71f7b83257e02193dc698851589c9546fde069f1c1d1a6ea39f763044551a342`.
+The authoritative installation mapping is now `[+1,+1,-1,+1,-1]`; the
+Creature Stream protocol and firmware IK limits use model coordinates, with
+sign conversion only at the servo boundary.
+
+Read-only state after boot reported model-space feedback
+`-12012|-47461|103711|293|65918` mdeg from raw counts
+`433|308|153|528|294`. All five feedback channels were fresh, all stale and
+servo-error flags were zero, and voltage was 8.00 V. The J2/J4 signs now match
+the model convention and all five values are inside the authoritative limits.
+
+Exactly one ownership check was performed; no active target or 28-second
+Creature Motion session was sent. `creature take` was accepted and entered
+HOLD with the captured target
+`6445|-46875|103711|-293|68848` mdeg. The immediate HOLD sample was
+`6738|-46875|104590|0|69434` mdeg, followed by
+`6738|-46582|105176|-293|69727` mdeg; stale/error flags remained zero and
+voltage was 7.90 V. The firmware take path disabled legacy idle and kept the
+target in HOLD. UART shows no post-take target discontinuity; a separate human
+visual jump assessment was not captured in the terminal record. `creature
+release` then returned `owner=released` successfully. Monitor exited cleanly
+and the port was released.
