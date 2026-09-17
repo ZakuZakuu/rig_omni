@@ -45,14 +45,21 @@ creature help
 `units=mdeg`, `max_stream_hz=40`, `watchdog_ms=250`, project/version, and the
 ESP-IDF app ELF SHA-256. The target parser accepts exactly one uint32 sequence
 and five signed int32 millidegree values; malformed, out-of-order, and
-out-of-range targets are rejected. Valid targets are swapped atomically and
-forwarded at at most 40 Hz.
+out-of-range targets are rejected. The PC demo sends a deterministic 33.333 Hz
+schedule (every third 100 Hz sample); firmware still enforces the independent
+25 ms physical write ceiling and never lets an incoming target bypass it.
 
 `creature take` requires calibration, teach, and Motion Lab to be idle and all
-five feedback samples fresh. It snapshots stock-idle state, disables idle and
-preset actions, and initializes the target from current feedback, so taking
-ownership is inert. The ACK includes ownership, sequence, target age and
-feedback freshness.
+five feedback samples healthy. It snapshots stock-idle state, disables idle
+and preset actions, initializes the target from current feedback, and enters
+`hold`; taking ownership is inert and does not start the watchdog. The first
+accepted target transitions `hold → active` and starts the 250 ms watchdog.
+The ACK includes ownership, sequence, target age and feedback freshness.
+
+`CREATURE_STATE` exposes both `fb_pos` (raw absolute SCS009 counts) and
+`fb_mdeg` (the calibrated joint angle relative to each servo's ZeroPos, using
+the same `(FbPos - ZeroPos) * M_A / M_N` conversion as firmware control).
+Host code must use `fb_mdeg` for `q_rad`; raw counts are diagnostic only.
 
 `creature stop` enters HOLD and continues forwarding the current measured
 posture when available. It does not snap to IK or neutral. `creature release`
@@ -61,10 +68,11 @@ was captured by `take`; it is not an emergency command.
 
 ## Watchdog and owner priority
 
-If no valid target arrives for 250 ms, the stream enters `timed_out` HOLD. It
-prefers fresh measured joint positions, otherwise the last valid target, and
-never resumes stock idle/IK automatically. A host must explicitly retake
-ownership. The xgo boundary is:
+If no valid target arrives for 250 ms, the stream enters `timed_out` HOLD. If
+feedback becomes stale or a servo reports a non-zero error while active, it
+enters `fault_hold`. In both cases it prefers fresh measured joint positions
+per joint and otherwise retains the last safe target, never resumes stock
+idle/IK automatically, and requires an explicit retake. The xgo boundary is:
 
 ```text
 parameter dump > Motion Lab > Creature Stream > teach/calibration > normal IK/actions/idle
@@ -77,8 +85,15 @@ path.
 ## Host use
 
 `pc.SerialHardwareBackend` converts the project convention `q_rad[5]` to
-integer mdeg, performs caps/state/take handshake, enforces simulation position
-limits and send-rate bounds, and provides `stop`/`release` cleanup on errors.
-Feedback is queried periodically for diagnostics and is never used to create a
-second controller.
+integer mdeg, verifies protocol/joint/unit/rate/watchdog capabilities, performs
+the hold-aware caps/state/take handshake, enforces simulation position limits
+and send-rate bounds, and fails closed on stale feedback, servo errors, owner
+changes, watchdog state, malformed state, or rejected targets. Normal success
+uses explicit `normal_stop_release()`; abnormal paths use
+`emergency_hold_close()` and never release ownership. Feedback is queried
+periodically for diagnostics and is never used to create a second controller.
 
+Firmware independently validates each target against the authoritative IK
+limits (J0 ±2.62, J1 ±1.57, J2 −0.50..2.50, J3 ±1.50, J4 −1.20..1.30 rad)
+before converting it to servo counts. Failed runs retain their manifest,
+command/feedback traces, event trace, and summary for post-mortem analysis.

@@ -4,11 +4,11 @@
 #include <math.h>
 #include <string.h>
 
-#include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/portmacro.h>
 
 #include "idle_motion.h"
+#include "ik.h"
 #include "motion_lab.h"
 #include "xgo.h"
 #include "xgo_action.h"
@@ -17,18 +17,18 @@ namespace {
 
 constexpr int16_t kStreamMinCount = 100;
 constexpr int16_t kStreamMaxCount = 923;
-constexpr uint32_t kStreamCommandPeriodUs = 25000;
-constexpr uint32_t kFeedbackFreshnessMs = 250;
+constexpr uint64_t kFeedbackFreshnessUs = 250000ULL;
 constexpr uint16_t kStreamServoSpeed = 350;
 
 struct CreatureStreamState {
     bool owned;
     bool holding;
     bool timed_out;
+    bool fault_hold;
     bool sequence_valid;
     uint32_t last_sequence;
-    uint32_t last_target_ms;
-    uint32_t last_send_us;
+    uint64_t last_target_us;
+    uint64_t last_send_us;
     bool force_send;
     bool previous_idle_enabled;
     uint16_t previous_motor_speed;
@@ -39,22 +39,30 @@ struct CreatureStreamState {
 CreatureStreamState state = {};
 portMUX_TYPE state_mux = portMUX_INITIALIZER_UNLOCKED;
 
-void clear_target(CreatureStreamState* current) {
-    memset(current->target_mdeg, 0, sizeof(current->target_mdeg));
-    memset(current->target_pos, 0, sizeof(current->target_pos));
-}
-
-bool feedback_is_fresh(int index, uint32_t now_ms) {
-    if (index < 0 || index >= MOTOR_NUM || motor[index].FbStale || motor[index].FbTimestampMs == 0) {
-        return false;
+uint64_t feedback_age_us(int index, uint64_t now_us) {
+    if (index < 0 || index >= MOTOR_NUM || motor[index].FbTimestampUs == 0 ||
+        now_us < motor[index].FbTimestampUs) {
+        return UINT64_MAX;
     }
-    return now_ms >= motor[index].FbTimestampMs &&
-           now_ms - motor[index].FbTimestampMs <= kFeedbackFreshnessMs;
+    return now_us - motor[index].FbTimestampUs;
 }
 
-bool all_feedback_fresh(uint32_t now_ms) {
+bool feedback_is_fresh(int index, uint64_t now_us) {
+    return index >= 0 && index < MOTOR_NUM && !motor[index].FbStale &&
+           motor[index].FbTimestampUs != 0 && feedback_age_us(index, now_us) <= kFeedbackFreshnessUs;
+}
+
+bool all_feedback_fresh(uint64_t now_us) {
     for (int i = 0; i < MOTOR_NUM; ++i) {
-        if (!feedback_is_fresh(i, now_ms)) return false;
+        if (!feedback_is_fresh(i, now_us)) return false;
+    }
+    return true;
+}
+
+bool all_feedback_healthy(uint64_t now_us) {
+    if (!all_feedback_fresh(now_us)) return false;
+    for (int i = 0; i < MOTOR_NUM; ++i) {
+        if (motor[i].FbError != 0) return false;
     }
     return true;
 }
@@ -66,6 +74,8 @@ int32_t position_to_mdeg(int16_t position, int index) {
 
 bool mdeg_to_position(int32_t mdeg, int index, int16_t* out_position) {
     if (out_position == nullptr || index < 0 || index >= MOTOR_NUM) return false;
+    const float radians = static_cast<float>(mdeg) * PI / 180000.0f;
+    if (!rig_arm_joint_within_limits(index, radians)) return false;
     const float position = static_cast<float>(motor[index].ZeroPos) +
         (static_cast<float>(mdeg) / 1000.0f) * M_N / M_A;
     if (!isfinite(position)) return false;
@@ -75,16 +85,19 @@ bool mdeg_to_position(int32_t mdeg, int index, int16_t* out_position) {
     return true;
 }
 
-void set_target_from_feedback(CreatureStreamState* current, uint32_t now_ms,
-                              bool refresh_timestamp) {
+void clear_target(CreatureStreamState* current) {
+    memset(current->target_mdeg, 0, sizeof(current->target_mdeg));
+    memset(current->target_pos, 0, sizeof(current->target_pos));
+}
+
+void set_target_from_feedback(CreatureStreamState* current, uint64_t now_us, bool force_send) {
     for (int i = 0; i < MOTOR_NUM; ++i) {
-        if (feedback_is_fresh(i, now_ms)) {
+        if (feedback_is_fresh(i, now_us)) {
             current->target_pos[i] = motor[i].FbPos;
             current->target_mdeg[i] = position_to_mdeg(motor[i].FbPos, i);
         }
     }
-    if (refresh_timestamp) current->last_target_ms = now_ms;
-    current->force_send = true;
+    current->force_send = force_send;
 }
 
 }  // namespace
@@ -96,61 +109,56 @@ void creature_stream_init() {
     portEXIT_CRITICAL(&state_mux);
 }
 
-CreatureStreamResult creature_stream_take(uint32_t now_ms) {
+CreatureStreamResult creature_stream_take(uint64_t now_us) {
     if (calibrate_mode == 1 || teach_state != TEACH_IDLE || motion_lab_is_active()) {
         return kCreatureStreamConflict;
     }
-    if (!all_feedback_fresh(now_ms)) return kCreatureStreamNoFeedback;
+    if (!all_feedback_healthy(now_us)) return kCreatureStreamNoFeedback;
 
     portENTER_CRITICAL(&state_mux);
     const bool was_owned = state.owned;
     const bool was_timed_out = state.timed_out;
+    const bool was_fault_hold = state.fault_hold;
+    if (was_owned && !state.holding && !was_timed_out && !was_fault_hold) {
+        portEXIT_CRITICAL(&state_mux);
+        return kCreatureStreamAlreadyOwned;
+    }
     if (!was_owned) {
         state.previous_idle_enabled = idle_motion_is_enabled();
         state.previous_motor_speed = motor_speed;
-        state.owned = true;
-        state.holding = false;
-        state.timed_out = false;
-        state.sequence_valid = false;
-        state.last_sequence = 0;
-        state.last_send_us = 0;
-        state.force_send = true;
-        clear_target(&state);
-    } else if (!was_timed_out && !state.holding) {
-        portEXIT_CRITICAL(&state_mux);
-        return kCreatureStreamAlreadyOwned;
-    } else {
-        state.holding = false;
-        state.timed_out = false;
-        state.sequence_valid = false;
-        state.last_sequence = 0;
-        state.last_send_us = 0;
-        state.force_send = true;
     }
-    set_target_from_feedback(&state, now_ms, true);
+    state.owned = true;
+    state.holding = true;
+    state.timed_out = false;
+    state.fault_hold = false;
+    state.sequence_valid = false;
+    state.last_sequence = 0;
+    state.last_target_us = 0;
+    state.last_send_us = 0;
+    clear_target(&state);
+    set_target_from_feedback(&state, now_us, true);
     portEXIT_CRITICAL(&state_mux);
 
-    // Ownership takes precedence over stock behavior. The first stream target
-    // is exactly the current feedback posture, so taking ownership is inert.
     idle_motion_set_enable(false);
     Action_ID = 0;
     actionLoop_FLAG = 0;
     motor_speed = kStreamServoSpeed;
-    return (was_owned && was_timed_out) ? kCreatureStreamAccepted : kCreatureStreamAccepted;
+    return (was_owned && (was_timed_out || was_fault_hold))
+        ? kCreatureStreamAccepted : (was_owned ? kCreatureStreamAlreadyOwned : kCreatureStreamAccepted);
 }
 
 CreatureStreamResult creature_stream_accept_target(uint32_t sequence,
                                                     const int32_t target_mdeg[MOTOR_NUM],
-                                                    uint32_t now_ms) {
+                                                    uint64_t now_us) {
     if (target_mdeg == nullptr) return kCreatureStreamMalformed;
     portENTER_CRITICAL(&state_mux);
     if (!state.owned) {
         portEXIT_CRITICAL(&state_mux);
         return kCreatureStreamNotOwned;
     }
-    if (state.timed_out) {
+    if (state.timed_out || state.fault_hold) {
         portEXIT_CRITICAL(&state_mux);
-        return kCreatureStreamTimedOut;
+        return state.fault_hold ? kCreatureStreamFaultHold : kCreatureStreamTimedOut;
     }
     if (state.sequence_valid && sequence <= state.last_sequence) {
         portEXIT_CRITICAL(&state_mux);
@@ -169,28 +177,28 @@ CreatureStreamResult creature_stream_accept_target(uint32_t sequence,
     }
     state.sequence_valid = true;
     state.last_sequence = sequence;
-    state.last_target_ms = now_ms;
+    state.last_target_us = now_us;
     state.holding = false;
-    state.force_send = true;
+    // Normal stream targets update the latest-target buffer only.  The
+    // physical command cadence remains enforced by creature_stream_should_send.
+    state.force_send = false;
     portEXIT_CRITICAL(&state_mux);
     return kCreatureStreamAccepted;
 }
 
-CreatureStreamResult creature_stream_stop(uint32_t now_ms) {
+CreatureStreamResult creature_stream_stop(uint64_t now_us) {
     portENTER_CRITICAL(&state_mux);
     if (!state.owned) {
         portEXIT_CRITICAL(&state_mux);
         return kCreatureStreamNotOwned;
     }
-    if (state.timed_out) {
-        state.holding = true;
-        set_target_from_feedback(&state, now_ms, false);
-        portEXIT_CRITICAL(&state_mux);
-        return kCreatureStreamTimedOut;
-    }
     state.holding = true;
-    set_target_from_feedback(&state, now_ms, true);
+    set_target_from_feedback(&state, now_us, true);
+    const bool fault = state.fault_hold;
+    const bool timed_out = state.timed_out;
     portEXIT_CRITICAL(&state_mux);
+    if (fault) return kCreatureStreamFaultHold;
+    if (timed_out) return kCreatureStreamTimedOut;
     return kCreatureStreamAccepted;
 }
 
@@ -226,32 +234,31 @@ bool creature_stream_is_timed_out() {
     return timed_out;
 }
 
-void creature_stream_update(uint32_t now_us) {
-    const uint32_t now_ms = now_us / 1000;
+void creature_stream_update(uint64_t now_us) {
     portENTER_CRITICAL(&state_mux);
-    if (state.owned && !state.holding && !state.timed_out &&
-        now_ms >= state.last_target_ms &&
-        now_ms - state.last_target_ms > CREATURE_STREAM_WATCHDOG_MS) {
-        state.timed_out = true;
-        // Prefer a fresh measured posture; otherwise retain the last valid
-        // target. In either case no stock controller is allowed to take over.
-        set_target_from_feedback(&state, now_ms, false);
+    if (state.owned && !state.holding && !state.timed_out && !state.fault_hold && state.sequence_valid) {
+        if (!all_feedback_healthy(now_us)) {
+            state.fault_hold = true;
+            state.holding = true;
+            set_target_from_feedback(&state, now_us, true);
+        } else if (now_us >= state.last_target_us &&
+                   now_us - state.last_target_us >
+                       static_cast<uint64_t>(CREATURE_STREAM_WATCHDOG_MS) * 1000ULL) {
+            state.timed_out = true;
+            state.holding = true;
+            set_target_from_feedback(&state, now_us, true);
+        }
     }
     portEXIT_CRITICAL(&state_mux);
 }
 
-bool creature_stream_should_send(uint32_t now_us) {
+bool creature_stream_should_send(uint64_t now_us) {
     portENTER_CRITICAL(&state_mux);
     if (!state.owned) {
         portEXIT_CRITICAL(&state_mux);
         return false;
     }
-    const bool due = state.force_send || state.last_send_us == 0 ||
-        now_us - state.last_send_us >= kStreamCommandPeriodUs;
-    if (due) {
-        state.force_send = false;
-        state.last_send_us = now_us;
-    }
+    const bool due = creature_stream_command_due(now_us, &state.last_send_us, &state.force_send);
     portEXIT_CRITICAL(&state_mux);
     return due;
 }
@@ -263,19 +270,34 @@ void creature_stream_get_target_pos(int16_t out_pos[MOTOR_NUM]) {
     portEXIT_CRITICAL(&state_mux);
 }
 
-void creature_stream_get_snapshot(CreatureStreamSnapshot* out, uint32_t now_ms) {
+bool creature_stream_feedback_is_healthy(uint64_t now_us) {
+    return all_feedback_healthy(now_us);
+}
+
+void creature_stream_get_snapshot(CreatureStreamSnapshot* out, uint64_t now_us) {
     if (out == nullptr) return;
     portENTER_CRITICAL(&state_mux);
     out->owned = state.owned;
     out->holding = state.holding;
     out->timed_out = state.timed_out;
+    out->fault_hold = state.fault_hold;
     out->last_sequence = state.last_sequence;
     out->sequence_valid = state.sequence_valid;
-    out->last_target_ms = state.last_target_ms;
-    out->target_age_ms = (state.last_target_ms == 0 || now_ms < state.last_target_ms)
-        ? UINT32_MAX : now_ms - state.last_target_ms;
+    out->last_target_us = state.last_target_us;
+    out->target_age_ms = (state.last_target_us == 0 || now_us < state.last_target_us)
+        ? UINT32_MAX : static_cast<uint32_t>((now_us - state.last_target_us) / 1000ULL);
     memcpy(out->target_mdeg, state.target_mdeg, sizeof(out->target_mdeg));
     memcpy(out->target_pos, state.target_pos, sizeof(out->target_pos));
+    for (int i = 0; i < MOTOR_NUM; ++i) {
+        out->feedback_pos[i] = motor[i].FbPos;
+        out->feedback_mdeg[i] = position_to_mdeg(motor[i].FbPos, i);
+        const uint64_t age_us = feedback_age_us(i, now_us);
+        out->feedback_age_ms[i] = age_us == UINT64_MAX
+            ? UINT32_MAX : static_cast<uint32_t>(age_us / 1000ULL);
+        out->feedback_stale[i] = motor[i].FbStale;
+        out->servo_error[i] = motor[i].FbError;
+    }
+    out->voltage_v = servo_voltage;
     portEXIT_CRITICAL(&state_mux);
 }
 
@@ -290,6 +312,7 @@ const char* creature_stream_result_string(CreatureStreamResult result) {
         case kCreatureStreamMalformed: return "malformed";
         case kCreatureStreamStaleSequence: return "stale_sequence";
         case kCreatureStreamInvalidTarget: return "invalid_target";
+        case kCreatureStreamFaultHold: return "fault_hold";
         default: return "unknown";
     }
 }

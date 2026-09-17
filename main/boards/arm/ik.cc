@@ -16,7 +16,6 @@
  #include <string.h>
  #define PI 3.14159
  namespace {
- 
  constexpr int N = RIG_ARM_IK_N;
  constexpr float H0 = 0.053f;
  constexpr float L1 = 0.090f;
@@ -53,7 +52,7 @@
      if (v > hi) return hi;
      return v;
  }
- 
+
  static inline Vec3 vec3(float x, float y, float z) {
      return {x, y, z};
  }
@@ -283,7 +282,7 @@
              }
          }
      }
- 
+
      float y[6];
      for (int i = 0; i < 6; ++i) {
          float s = b[i];
@@ -302,7 +301,6 @@
      }
      return true;
  }
- 
  /** dq = J^T W (W J J^T W + λ²I)⁻¹ W e */
  static void dlsStep(
      const float J[6][N],
@@ -495,6 +493,19 @@
  }
  
  }  // namespace
+
+bool rig_arm_joint_within_limits(int joint, float q_rad) {
+    return joint >= 0 && joint < RIG_ARM_IK_N && isfinite(q_rad) &&
+           q_rad >= LIM[joint][0] && q_rad <= LIM[joint][1];
+}
+
+float rig_arm_joint_min_limit(int joint) {
+    return (joint >= 0 && joint < RIG_ARM_IK_N) ? LIM[joint][0] : 0.0f;
+}
+
+float rig_arm_joint_max_limit(int joint) {
+    return (joint >= 0 && joint < RIG_ARM_IK_N) ? LIM[joint][1] : 0.0f;
+}
  
  void rig_arm_ik_init(RigArmIK *ik, float lam) {
      memset(ik, 0, sizeof(*ik));
@@ -573,9 +584,8 @@
          memcpy(ik->q_prev, q, sizeof(q));
          ik->has_prev = true;
      }
- 
+
      if (pos_err) *pos_err = pe;
      if (ori_err) *ori_err = oe;
      return ok;
  }
- 

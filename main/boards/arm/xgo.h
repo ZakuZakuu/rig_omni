@@ -26,9 +26,9 @@ typedef struct
 	short FbTor;
 	uint8_t FbError;
 	uint8_t FbLastError;
-	uint32_t FbLastErrorMs;
+	uint64_t FbLastErrorUs;
 	uint32_t FbErrorCount;
-	uint32_t FbTimestampMs;
+	uint64_t FbTimestampUs;
 	uint32_t FbSequence;
 	bool FbStale;
 	short ZeroPos;

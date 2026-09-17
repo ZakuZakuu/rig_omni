@@ -158,58 +158,60 @@ void PrintCreatureStreamHelp() {
            "  creature help\r\n");
 }
 
-void PrintCreatureStreamState(uint32_t now_ms) {
+void PrintCreatureStreamState(uint64_t now_us) {
     CreatureStreamSnapshot snapshot = {};
-    creature_stream_get_snapshot(&snapshot, now_ms);
+    creature_stream_get_snapshot(&snapshot, now_us);
     printf("CREATURE_STATE,owner=%s,holding=%d,timed_out=%d,seq_valid=%d,last_seq=%lu,"
-           "target_age_ms=%lu,last_target_ms=%lu,target_mdeg=%ld|%ld|%ld|%ld|%ld,"
+           "target_age_ms=%lu,last_target_ms=%llu,target_mdeg=%ld|%ld|%ld|%ld|%ld,"
            "target_pos=%d|%d|%d|%d|%d,fb_pos=%d|%d|%d|%d|%d,"
-           "fb_age_ms=%lu|%lu|%lu|%lu|%lu,fb_stale=%d|%d|%d|%d|%d,"
+           "fb_mdeg=%ld|%ld|%ld|%ld|%ld,fb_age_ms=%lu|%lu|%lu|%lu|%lu,fb_stale=%d|%d|%d|%d|%d,"
            "servo_error=%d|%d|%d|%d|%d,voltage_v=%.2f\r\n",
-           snapshot.owned ? (snapshot.timed_out ? "timed_out" :
-                              (snapshot.holding ? "hold" : "active")) : "released",
+           snapshot.owned ? (snapshot.fault_hold ? "fault_hold" :
+                              (snapshot.timed_out ? "timed_out" :
+                               (snapshot.holding ? "hold" : "active"))) : "released",
            snapshot.holding ? 1 : 0, snapshot.timed_out ? 1 : 0,
            snapshot.sequence_valid ? 1 : 0,
            static_cast<unsigned long>(snapshot.last_sequence),
            static_cast<unsigned long>(snapshot.target_age_ms),
-           static_cast<unsigned long>(snapshot.last_target_ms),
+           static_cast<unsigned long long>(snapshot.last_target_us / 1000ULL),
            static_cast<long>(snapshot.target_mdeg[0]), static_cast<long>(snapshot.target_mdeg[1]),
            static_cast<long>(snapshot.target_mdeg[2]), static_cast<long>(snapshot.target_mdeg[3]),
            static_cast<long>(snapshot.target_mdeg[4]),
            snapshot.target_pos[0], snapshot.target_pos[1], snapshot.target_pos[2],
            snapshot.target_pos[3], snapshot.target_pos[4],
-           motor[0].FbPos, motor[1].FbPos, motor[2].FbPos, motor[3].FbPos, motor[4].FbPos,
-           static_cast<unsigned long>(motor[0].FbTimestampMs == 0 || now_ms < motor[0].FbTimestampMs ? UINT32_MAX : now_ms - motor[0].FbTimestampMs),
-           static_cast<unsigned long>(motor[1].FbTimestampMs == 0 || now_ms < motor[1].FbTimestampMs ? UINT32_MAX : now_ms - motor[1].FbTimestampMs),
-           static_cast<unsigned long>(motor[2].FbTimestampMs == 0 || now_ms < motor[2].FbTimestampMs ? UINT32_MAX : now_ms - motor[2].FbTimestampMs),
-           static_cast<unsigned long>(motor[3].FbTimestampMs == 0 || now_ms < motor[3].FbTimestampMs ? UINT32_MAX : now_ms - motor[3].FbTimestampMs),
-           static_cast<unsigned long>(motor[4].FbTimestampMs == 0 || now_ms < motor[4].FbTimestampMs ? UINT32_MAX : now_ms - motor[4].FbTimestampMs),
-           motor[0].FbStale ? 1 : 0, motor[1].FbStale ? 1 : 0, motor[2].FbStale ? 1 : 0,
-           motor[3].FbStale ? 1 : 0, motor[4].FbStale ? 1 : 0,
-           motor[0].FbError, motor[1].FbError, motor[2].FbError, motor[3].FbError,
-           motor[4].FbError, servo_voltage);
+           snapshot.feedback_pos[0], snapshot.feedback_pos[1], snapshot.feedback_pos[2],
+           snapshot.feedback_pos[3], snapshot.feedback_pos[4],
+           static_cast<long>(snapshot.feedback_mdeg[0]), static_cast<long>(snapshot.feedback_mdeg[1]),
+           static_cast<long>(snapshot.feedback_mdeg[2]), static_cast<long>(snapshot.feedback_mdeg[3]),
+           static_cast<long>(snapshot.feedback_mdeg[4]),
+           static_cast<unsigned long>(snapshot.feedback_age_ms[0]),
+           static_cast<unsigned long>(snapshot.feedback_age_ms[1]),
+           static_cast<unsigned long>(snapshot.feedback_age_ms[2]),
+           static_cast<unsigned long>(snapshot.feedback_age_ms[3]),
+           static_cast<unsigned long>(snapshot.feedback_age_ms[4]),
+           snapshot.feedback_stale[0] ? 1 : 0, snapshot.feedback_stale[1] ? 1 : 0,
+           snapshot.feedback_stale[2] ? 1 : 0, snapshot.feedback_stale[3] ? 1 : 0,
+           snapshot.feedback_stale[4] ? 1 : 0, snapshot.servo_error[0], snapshot.servo_error[1],
+           snapshot.servo_error[2], snapshot.servo_error[3], snapshot.servo_error[4], snapshot.voltage_v);
 }
 
 void PrintCreatureStreamAck(const char* command, CreatureStreamResult result,
-                            uint32_t now_ms) {
+                            uint64_t now_us) {
     CreatureStreamSnapshot snapshot = {};
-    creature_stream_get_snapshot(&snapshot, now_ms);
+    creature_stream_get_snapshot(&snapshot, now_us);
     printf("CREATURE_ACK,command=%s,result=%s,owner=%s,seq_valid=%d,last_seq=%lu,"
            "target_age_ms=%lu,target_mdeg=%ld|%ld|%ld|%ld|%ld,feedback_fresh=%d\r\n",
            command, creature_stream_result_string(result),
-           snapshot.owned ? (snapshot.timed_out ? "timed_out" :
-                              (snapshot.holding ? "hold" : "active")) : "released",
+           snapshot.owned ? (snapshot.fault_hold ? "fault_hold" :
+                              (snapshot.timed_out ? "timed_out" :
+                               (snapshot.holding ? "hold" : "active"))) : "released",
            snapshot.sequence_valid ? 1 : 0,
            static_cast<unsigned long>(snapshot.last_sequence),
            static_cast<unsigned long>(snapshot.target_age_ms),
            static_cast<long>(snapshot.target_mdeg[0]), static_cast<long>(snapshot.target_mdeg[1]),
            static_cast<long>(snapshot.target_mdeg[2]), static_cast<long>(snapshot.target_mdeg[3]),
            static_cast<long>(snapshot.target_mdeg[4]),
-           motor[0].FbTimestampMs != 0 && !motor[0].FbStale &&
-           motor[1].FbTimestampMs != 0 && !motor[1].FbStale &&
-           motor[2].FbTimestampMs != 0 && !motor[2].FbStale &&
-           motor[3].FbTimestampMs != 0 && !motor[3].FbStale &&
-           motor[4].FbTimestampMs != 0 && !motor[4].FbStale ? 1 : 0);
+           creature_stream_feedback_is_healthy(now_us) ? 1 : 0);
 }
 
 }  // namespace
@@ -1167,26 +1169,21 @@ public:
             bool header_emitted = false;
             while (true) {
                 MotionLabStatus status = {};
-                const uint32_t now_us = static_cast<uint32_t>(esp_timer_get_time());
-                const uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
-                motion_lab_get_status(&status, now_us);
+                const uint64_t now_us = static_cast<uint64_t>(esp_timer_get_time());
+                const uint32_t now_ms = static_cast<uint32_t>(now_us / 1000ULL);
+                motion_lab_get_status(&status, static_cast<uint32_t>(now_us));
                 if (status.active) {
                     short command_pos[MOTOR_NUM];
-                    uint32_t feedback_ts_ms[MOTOR_NUM];
+                    uint64_t feedback_ts_us[MOTOR_NUM];
                     uint32_t feedback_age_ms[MOTOR_NUM];
                     for (int i = 0; i < MOTOR_NUM; ++i) {
                         command_pos[i] = static_cast<short>(motor[i].ZeroPos +
                             status.command_deg[i] / M_A * M_N);
-                        feedback_ts_ms[i] = motor[i].FbTimestampMs;
-                        if (feedback_ts_ms[i] == 0) {
+                        feedback_ts_us[i] = motor[i].FbTimestampUs;
+                        if (feedback_ts_us[i] == 0 || now_us < feedback_ts_us[i]) {
                             feedback_age_ms[i] = UINT32_MAX;
-                        } else if (feedback_ts_ms[i] > now_ms) {
-                            // The RX task can update the timestamp between the
-                            // now_ms sample and this snapshot. Do not expose an
-                            // unsigned wraparound as a multi-billion-ms age.
-                            feedback_age_ms[i] = 0;
                         } else {
-                            feedback_age_ms[i] = now_ms - feedback_ts_ms[i];
+                            feedback_age_ms[i] = static_cast<uint32_t>((now_us - feedback_ts_us[i]) / 1000ULL);
                         }
                     }
                     if (!header_emitted) {
@@ -1205,11 +1202,11 @@ public:
                            motor[0].FbPos, motor[1].FbPos, motor[2].FbPos, motor[3].FbPos, motor[4].FbPos,
                            motor[0].FbSpd, motor[1].FbSpd, motor[2].FbSpd, motor[3].FbSpd, motor[4].FbSpd,
                            motor[0].FbTor, motor[1].FbTor, motor[2].FbTor, motor[3].FbTor, motor[4].FbTor,
-                           static_cast<unsigned long>(feedback_ts_ms[0]),
-                           static_cast<unsigned long>(feedback_ts_ms[1]),
-                           static_cast<unsigned long>(feedback_ts_ms[2]),
-                           static_cast<unsigned long>(feedback_ts_ms[3]),
-                           static_cast<unsigned long>(feedback_ts_ms[4]),
+                           static_cast<unsigned long>(feedback_ts_us[0] / 1000ULL),
+                           static_cast<unsigned long>(feedback_ts_us[1] / 1000ULL),
+                           static_cast<unsigned long>(feedback_ts_us[2] / 1000ULL),
+                           static_cast<unsigned long>(feedback_ts_us[3] / 1000ULL),
+                           static_cast<unsigned long>(feedback_ts_us[4] / 1000ULL),
                            static_cast<unsigned long>(feedback_age_ms[0]),
                            static_cast<unsigned long>(feedback_age_ms[1]),
                            static_cast<unsigned long>(feedback_age_ms[2]),
@@ -1254,7 +1251,7 @@ public:
                 line[line_length] = '\0';
                 line_length = 0;
 
-                const uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+                const uint64_t now_us = static_cast<uint64_t>(esp_timer_get_time());
                 if (strcmp(line, "creature help") == 0) {
                     PrintCreatureStreamHelp();
                     continue;
@@ -1264,19 +1261,19 @@ public:
                     continue;
                 }
                 if (strcmp(line, "creature state") == 0) {
-                    PrintCreatureStreamState(now_ms);
+                    PrintCreatureStreamState(now_us);
                     continue;
                 }
                 if (strcmp(line, "creature take") == 0) {
-                    PrintCreatureStreamAck("take", creature_stream_take(now_ms), now_ms);
+                    PrintCreatureStreamAck("take", creature_stream_take(now_us), now_us);
                     continue;
                 }
                 if (strcmp(line, "creature stop") == 0) {
-                    PrintCreatureStreamAck("stop", creature_stream_stop(now_ms), now_ms);
+                    PrintCreatureStreamAck("stop", creature_stream_stop(now_us), now_us);
                     continue;
                 }
                 if (strcmp(line, "creature release") == 0) {
-                    PrintCreatureStreamAck("release", creature_stream_release(), now_ms);
+                    PrintCreatureStreamAck("release", creature_stream_release(), now_us);
                     continue;
                 }
                 if (strncmp(line, "creature target", strlen("creature target")) == 0) {
@@ -1284,9 +1281,9 @@ public:
                     int32_t target_mdeg[CREATURE_STREAM_JOINTS] = {};
                     const bool parsed = creature_stream_parse_target(line, &sequence, target_mdeg);
                     const CreatureStreamResult result = parsed
-                        ? creature_stream_accept_target(sequence, target_mdeg, now_ms)
+                        ? creature_stream_accept_target(sequence, target_mdeg, now_us)
                         : kCreatureStreamMalformed;
-                    PrintCreatureStreamAck("target", result, now_ms);
+                    PrintCreatureStreamAck("target", result, now_us);
                     continue;
                 }
 

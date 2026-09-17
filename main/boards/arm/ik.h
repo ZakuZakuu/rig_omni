@@ -64,6 +64,11 @@ bool rig_arm_ik_solve(
 /** 正运动学：仅输出末端位姿 */
 void rig_arm_fk(const float q[RIG_ARM_IK_N], float p[3], float R[9]);
 
+/** Authoritative model limits shared by IK and direct Creature Stream input. */
+bool rig_arm_joint_within_limits(int joint, float q_rad);
+float rig_arm_joint_min_limit(int joint);
+float rig_arm_joint_max_limit(int joint);
+
 #ifdef __cplusplus
 }
 #endif

@@ -163,7 +163,7 @@ void InitZeroPos(){
     for(int i=0;i<MOTOR_NUM;i++){
         motor[i].ID = i+1;
         motor[i].Load = 0;
-		motor[i].FbTimestampMs = 0;
+		motor[i].FbTimestampUs = 0;
 		motor[i].FbSequence = 0;
 		motor[i].FbStale = true;
     }
@@ -598,9 +598,9 @@ void xgo_dump_factory_parameters() {
 void xgo_print_servo_status() {
     printf("MLAB_SERVO_STATUS,id,error_hex,last_error_hex,last_error_ts_ms,error_count,fb_pos,fb_speed_raw,fb_load_raw,stale\r\n");
     for (int i = 0; i < MOTOR_NUM; ++i) {
-        printf("MLAB_SERVO_STATUS,%d,%02X,%02X,%lu,%lu,%d,%d,%d,%d\r\n",
+        printf("MLAB_SERVO_STATUS,%d,%02X,%02X,%llu,%lu,%d,%d,%d,%d\r\n",
                i + 1, motor[i].FbError, motor[i].FbLastError,
-               static_cast<unsigned long>(motor[i].FbLastErrorMs),
+               static_cast<unsigned long long>(motor[i].FbLastErrorUs / 1000ULL),
                static_cast<unsigned long>(motor[i].FbErrorCount),
                motor[i].FbPos, static_cast<int>(motor[i].FbSpd), motor[i].FbTor,
                motor[i].FbStale ? 1 : 0);
@@ -688,20 +688,21 @@ void xgo_rx(){
                             motor[motor_index].FbError = status_error;
                             if (status_error != 0) {
                                 motor[motor_index].FbLastError = status_error;
-                                motor[motor_index].FbLastErrorMs =
-                                    static_cast<uint32_t>(esp_timer_get_time() / 1000);
+                                motor[motor_index].FbLastErrorUs =
+                                    static_cast<uint64_t>(esp_timer_get_time());
                                 motor[motor_index].FbErrorCount++;
                             }
                             motor[motor_index].FbPos = POS_HIGH_Byte | (POS_LOW_Byte << 8);
                             motor[motor_index].FbSpd = VEL_HIGH_Byte | (VEL_LOW_Byte << 8);
                             motor[motor_index].FbTor = TOR_HIGH_Byte | (TOR_LOW_Byte << 8);
-                            motor[motor_index].FbTimestampMs =
-                                static_cast<uint32_t>(esp_timer_get_time() / 1000);
+                            motor[motor_index].FbTimestampUs =
+                                static_cast<uint64_t>(esp_timer_get_time());
                             motor[motor_index].FbSequence++;
                             motor[motor_index].FbStale = false;
                             if (feedback_poll_waiting && packet_id == feedback_poll_id) {
                                 feedback_poll_waiting = false;
-                                const uint32_t response_ms = motor[motor_index].FbTimestampMs;
+                                const uint32_t response_ms =
+                                    static_cast<uint32_t>(motor[motor_index].FbTimestampUs / 1000ULL);
                                 if (is_high_rate_id(packet_id)) {
                                     if (feedback_high_first_response_ms == 0) {
                                         feedback_high_first_response_ms = response_ms;
@@ -1121,7 +1122,7 @@ void xgo_control() {
         // owns the joints; it must not replay unexpectedly after release.
         Action_ID = 0;
         actionLoop_FLAG = 0;
-        const uint32_t now_us = static_cast<uint32_t>(esp_timer_get_time());
+        const uint64_t now_us = static_cast<uint64_t>(esp_timer_get_time());
         creature_stream_update(now_us);
         if (creature_stream_should_send(now_us)) {
             short stream_pos[MOTOR_NUM] = {};

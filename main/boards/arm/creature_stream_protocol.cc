@@ -5,6 +5,10 @@
 #include <stdlib.h>
 
 namespace {
+constexpr uint64_t kCreatureStreamCommandPeriodUs = 25000ULL;
+}
+
+namespace {
 
 void skip_space(const char** cursor) {
     while (**cursor != '\0' && isspace(static_cast<unsigned char>(**cursor))) ++(*cursor);
@@ -50,4 +54,16 @@ bool creature_stream_parse_target(const char* line, uint32_t* sequence,
     }
     skip_space(&cursor);
     return *cursor == '\0';
+}
+
+bool creature_stream_command_due(uint64_t now_us, uint64_t* last_send_us,
+                                 bool* force_send) {
+    if (last_send_us == nullptr || force_send == nullptr) return false;
+    const bool due = *force_send || *last_send_us == 0 || now_us < *last_send_us ||
+        now_us - *last_send_us >= kCreatureStreamCommandPeriodUs;
+    if (due) {
+        *force_send = false;
+        *last_send_us = now_us;
+    }
+    return due;
 }
