@@ -784,6 +784,53 @@ smoothness, sound/vibration, and return quality are left unclassified. No
 formal +3° run, retry, parameter tuning, EEPROM write, or additional physical
 motion was performed.
 
+## 2026-09-17 — First supervised ±8° conditioning / health-motion validation
+
+The host plan was verified at PR #1 commit
+`f3de25d29b221d2363b58b228d29a39035fbf26d`; only host-side harness,
+documentation, and tests differ from the already flashed runtime image. The
+device was checked through ESP-IDF monitor before motion and still reported
+protocol 2, experiments `0|1|2|3|4|5`, `reversal=1`, all five servos online,
+zero errors/stale flags, and ELF SHA
+`ec3fd0859ea989e336c6024a2ca766770448f8edabe1d1767a1d0dcccdb4986c`.
+
+Exactly one supervised conditioning-only command was sent:
+
+```text
+mlab run 5 2 2 8 4000 0 8 30 250
+```
+
+The immutable capture is under
+`backups/motion-lab-conditioning-only-2026-09-17-positive-health8-hw1/`.
+The requested ±8° endpoints are ±27.3067 counts. The generated command held
++27 counts (+7.9102°) and −28 counts (−8.2031°), with endpoint errors of
+0.3067 and 0.6933 counts (0.0898° and 0.2031°); both are inside the 1.5-count
+fidelity tolerance and show no material command overshoot beyond quantization.
+
+Feedback reached +17 counts (+4.9805°) and −32 counts (−9.3750°); the raw
+negative peak was −33 counts. The settled return was −3 counts (−0.8789°)
+from the starting feedback count, within the 5-count return gate. Feedback was
+100% valid with 237 unique samples at 16.90 Hz; age P50/P95/max was 3/31/73 ms
+and stale fraction 0%. Voltage during the motion was 7.6–7.9 V, peak raw load
+was 1273, and raw speed remains an uncalibrated diagnostic (`speed_cmd_raw=350`).
+
+The unchanged 50% health gate required at least 13.5 counts (3.9551°) for the
+quantized +27-count positive endpoint and 14.0 counts (4.1016°) for the
+quantized −28-count endpoint. Both directions passed, so the manifest records
+`status=conditioning_complete`, `physical_motion_started=true`,
+`conditioning_passed=true`, `formal_run_started=false`, and cleanup completed
+(`mlab stop`, polling off, compensation off). This is evidence that the ±8°
+profile is a command-faithful and telemetry-healthy health motion; it is not a
+small-signal capability measurement, and no formal +3° run was started.
+
+The terminal record contains no post-run human description of visibility,
+directional smoothness, sound/vibration, or return appearance. Visual
+acceptance is therefore left pending rather than inferred from telemetry. If
+the user confirms both directions were clearly visible and physically normal,
+the ±8° motion can be adopted as the standard preconditioner; otherwise stop
+preconditioning characterization and investigate the J2 direction-dependent
+response without increasing amplitude automatically.
+
 ## 2026-09-17 — Conditioning / health-motion protocol revised to ±8°
 
 The corrected ±5° conditioning command was valid offline, but it was not a
