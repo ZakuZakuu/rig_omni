@@ -866,3 +866,65 @@ counts (3.9551°). This motion is intended to break frictional history, establis
 directional preload, verify obvious bidirectional motion, and return to center
 from the negative side before a positive formal +3° test; it is not used to
 estimate small-signal capability.
+
+## 2026-09-17 — Conditioned J2 +3° after ±8° health motion (health8-c1)
+
+The host checkout was verified at PR #1 branch
+`feat/scs009-dynamics-characterization`, commit
+`c6783288678292a5fbad17661438aeab764dbcd1`. The device was not reflashed;
+ESP-IDF monitor readiness confirmed protocol 2, experiments `0|1|2|3|4|5`,
+`reversal=1`, all five servos online, zero error/stale flags, and the known
+runtime ELF SHA
+`ec3fd0859ea989e336c6024a2ca766770448f8edabe1d1767a1d0dcccdb4986c`.
+
+The immutable capture is under
+`backups/motion-lab-conditioned-j2-plus3-2026-09-17-health8-c1/`. Exactly one
+conditioning-plus-formal attempt was made with `--max-runs 1`:
+
+```text
+conditioning: mlab run 5 2 2 8 4000 0 8 30 250
+formal:       mlab run 4 2 2 3 3000 0 8 30 250
+```
+
+The ±8° conditioning motion passed its existing health gate. Its generated
+commands reached +27/−28 counts (+7.9102/−8.2031°); feedback reached +16/−31
+counts (+4.6875/−9.0820°), and the settled return was exactly 0 counts from
+the conditioning start. Conditioning feedback was 100% valid at 16.96 Hz;
+feedback age P50 was 3 ms, P95 35 ms, and maximum 78 ms; stale rows were 0.
+Voltage was 7.7–8.0 V and peak raw load was 1303. These values are kept
+separate from the formal small-signal metrics.
+
+The formal J2 positive +3° command requested 10.24 counts (3.0000°) and
+actually generated a +10-count (+2.9297°) endpoint. Feedback achieved only
++1 count (+0.2930°), an achieved/commanded ratio of 0.10; during the command
+hold, feedback remained approximately 146–151 while the commanded endpoint
+was 160 (starting feedback 150). Final feedback was 149, or −1 count
+(−0.2930°) from the starting position. No command overshoot or feedback jump
+event was reported, but settling/onset were not meaningful after the safety
+abort. Tracking RMS error was 2.4683°, peak error 4.1016°, exceeding the
+2.25° small-motion sanity guard. The run therefore stopped fail-closed after
+the single formal command; this guard is not a calibrated actuator limit.
+
+Formal telemetry was 100% valid at 16.78 Hz; feedback age P50/P95/max was
+3/36/117 ms and stale fraction 0%. Voltage was 7.9–8.1 V, peak raw load was
+1243, and raw speed values (0–32818) remain uncalibrated diagnostics. The
+manifest records `conditioning_passed=true`, `formal_run_started=true`,
+`status=aborted`, and cleanup completed (`mlab stop`, polling off,
+compensation off). No retry, negative formal test, EEPROM write, or servo
+parameter change was performed.
+
+Compared only with the formal cold baselines, the conditioned result was
+`1/10` feedback counts versus cold r1 `7/10` and cold r2 `0/10`. One run is
+not a repeatability claim. The result does not support an improvement from
+the ±8° preconditioner; substantial small-signal loss remains, so internal
+dead-zone/startup-force or low-speed stiction/control behavior remain stronger
+hypotheses. The conditioning motion itself passed, but the formal run's
+tracking guard failure means no further physical experiment should be started
+automatically.
+
+The previous ±8° visual observation is preserved: both directions showed a
+similar stick/static-friction-like hesitation, with no obvious qualitative
+direction difference by eye. No new post-run human visual description was
+available in the terminal record, so visibility, smoothness, sound/vibration,
+and subjective comparison of this run remain unclassified rather than
+inferred.
