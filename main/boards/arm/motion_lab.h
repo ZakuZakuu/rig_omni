@@ -14,6 +14,9 @@ enum MotionLabExperiment {
     kMotionLabStaggeredSweep = 2,
     kMotionLabHold = 3,
     kMotionLabStepHoldReturn = 4,
+    // Center -> signed amplitude -> opposite signed amplitude -> center.
+    // This is a reversal lost-motion proxy, not a mechanical backlash test.
+    kMotionLabReversalSweep = 5,
 };
 
 enum MotionLabTrajectory {

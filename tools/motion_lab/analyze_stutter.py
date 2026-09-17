@@ -21,6 +21,19 @@ def _array(value: str, cast=float) -> list:
     return [cast(part) for part in value.split("|")]
 
 
+def _joint_value(value: str, joint: int, cast=float):
+    """Read a shared scalar or a historical per-joint field.
+
+    ``speed_cmd_raw`` is emitted by the current firmware as one scalar because
+    the sync-write applies the same runtime command to every joint. Older
+    captures may contain a five-element vector, so retain that representation
+    for backwards-compatible analysis.
+    """
+
+    values = value.split("|")
+    return cast(values[0] if len(values) == 1 else values[joint])
+
+
 def parse_capture(path: Path, joint: int = 0) -> list[dict[str, float]]:
     rows: list[dict[str, float]] = []
     for line in path.read_text(errors="replace").splitlines():
@@ -38,9 +51,11 @@ def parse_capture(path: Path, joint: int = 0) -> list[dict[str, float]]:
                 "fb_pos": _array(fields[8])[joint],
                 "fb_speed_raw": _array(fields[9])[joint],
                 "fb_load_raw": _array(fields[10])[joint],
+                "fb_ts_ms": _array(fields[11])[joint],
                 "fb_age_ms": _array(fields[12])[joint],
                 "stale": _array(fields[13], int)[joint],
                 "voltage_v": float(fields[14]),
+                "speed_cmd_raw": _joint_value(fields[15], joint),
             })
         except (IndexError, ValueError):
             continue

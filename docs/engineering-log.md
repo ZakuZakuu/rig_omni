@@ -588,6 +588,72 @@ and `MLAB_COMP enabled=0`. v0.2 therefore closes as hardware-dominated with
 the factory profile retained; no candidate is promoted and the next milestone
 is Creature Motion rather than more low-level actuator tuning.
 
+## 2026-09-16 — Deployment contract before conditioned characterization
+
+The immutable cold J2 `+3°` evidence remains the first hardware record: r1
+commanded 10 counts (2.9297°) and achieved 7 counts (2.0508°), while r2
+commanded the same 10 counts and achieved 0 counts. Those runs were collected
+with firmware that already supported experiment 4, and remain valid cold-run
+evidence; they are not a repeatability claim.
+
+The first conditioning-only attempt was saved under
+`backups/motion-lab-conditioning-only-2026-09-16-positive-c0`. The host checkout
+contained experiment-5 code, but the device was not redeployed: after the
+preflight, the device returned `MLAB_CONSOLE run: invalid config` and emitted no
+`MLAB` telemetry. No physical conditioning motion or formal run was therefore
+confirmed. c0 is classified as a deployment/capability failure, not a servo or
+conditioning result; `formal_run_started=false` and cleanup completed.
+
+The process is now explicit: capture host branch/commit and device-reported
+image identity separately, flash and verify with ESP-IDF monitor, query
+`mlab caps`, and only then allow a capability-matched experiment. A malformed
+capability response, unsupported experiment, invalid config without telemetry,
+or any failed readiness/safety gate stops the protocol without an automatic
+retry or follow-up movement.
+
+## 2026-09-17 — First valid supervised conditioning-only run
+
+The deployment gate passed on host firmware commit
+`55bf4b3499df88d8fc9e857f5fee5d8063433750`. The device reported protocol 2,
+experiments `0|1|2|3|4|5`, reversal support, and image ELF SHA
+`24083392406d518d8a86ff748236167b29b24d3f86590fe59defad4ae9b0640f`.
+Read-only preflight passed for all five servo IDs, the parameter snapshot was
+complete, and the observed voltage was 8.0 V.
+
+Exactly one supervised conditioning command was sent:
+
+```text
+mlab run 5 2 2 5 1000 0 8 30 250
+```
+
+The immutable capture is under
+`backups/motion-lab-conditioning-only-2026-09-17-positive-hw1/`. The measured
+commanded excursions were +19 counts (+5.5664°) and −21 counts (−6.1523°).
+Feedback achieved +8 counts (+2.3438°) and −23 counts (−6.7383°), then returned
+to the starting feedback count exactly (0 counts / 0° return error). Feedback
+valid rate was 100%, unique sample rate 16.29 Hz, feedback-age P50/P95/max was
+3/49/107 ms, stale fraction was 0%, voltage was 8.0–8.1 V, and peak raw load
+was 1243. Raw speed values remain uncalibrated diagnostics.
+
+The manifest records `physical_motion_started=true`,
+`conditioning_passed=false`, `formal_run_started=false`, and `executed_runs=0`;
+cleanup (`mlab stop`, polling off, compensation off) completed. The original
+health result must not be read as a clean positive-direction breakaway failure:
+the 1,000 ms minimum-jerk reference is dynamically infeasible at an 8°/s cap.
+The ideal reversal leg alone requires about 18.75°/s, and a faithful offline
+simulation of the firmware command integrator produces distorted endpoints
+(approximately +5.69° / −6.05°, with velocity and acceleration limits active).
+That explains the emitted +19/−21 counts versus the nominal ±17.07 counts;
+the +8-count feedback excursion is therefore evidence from a confounded
+experiment, not an actuator capability verdict. The raw telemetry still
+confirms physical reversal response, healthy feedback, and exact return. No
+formal +3° run, negative conditioning, or automatic retry was performed. No
+human visual observation was supplied in the terminal record.
+
+The conditioning protocol is corrected offline before another hardware run:
+the same 8°/s and 30°/s² limits use a 2,500 ms transition, giving a 9,500 ms
+center → +5° → −5° → center sequence with no simulated endpoint overshoot.
+
 ## 2026-09-17 — Stock idle-motion isolation check
 
 The supervised conditioning-only capture
@@ -604,3 +670,261 @@ To make the state controllable from the ESP-IDF monitor without an MCP client,
 the UART console now provides `mlab idle off|on|status`. This is a RAM-only
 switch; reboot restores the upstream default (enabled), and it does not write
 servo EEPROM or alter Motion Lab's temporary isolation/restore behavior.
+
+## 2026-09-17 — Corrected conditioning-only validation (c1)
+
+The firmware branch `feat/scs009-dynamics-characterization` was verified at
+host commit `0f6c2f8956c84a07eaeddbc8381233c2f096ea27`. It was rebuilt with
+ESP-IDF v5.5.3, flashed through the ESP-IDF monitor, and verified before the
+experiment. The device reported protocol 2, experiments `0|1|2|3|4|5`,
+`reversal=1`, and image ELF SHA
+`ec3fd0859ea989e336c6024a2ca766770448f8edabe1d1767a1d0dcccdb4986c`.
+Read-only `mlab status` reported all five IDs online with zero current or
+latched errors and no stale flags. `mlab idle status` reported enabled, then
+`mlab idle off` was used only to simplify observation; Motion Lab direct-joint
+ownership independently isolates idle during the run.
+
+Exactly one supervised physical command was sent after the deployment gate:
+
+```text
+mlab run 5 2 2 5 2500 0 8 30 250
+```
+
+The immutable capture is under
+`backups/motion-lab-conditioning-only-2026-09-17-positive-c1/`. The protocol
+was the corrected minimum-jerk sequence:
+`center → +5° → −5° → center`, 2,500 ms transitions, 1,000 ms holds, an 8°/s
+velocity cap, and a 30°/s² acceleration cap (9,500 ms total).
+
+Requested excursions were ±17.0667 counts (±5.0000°). The generated command
+held +17 counts (+4.9805°) and −18 counts (−5.2734°): endpoint errors were
+0.0667 counts (0.0195°) positive and 0.9333 counts (0.2734°) negative, both
+inside the 1.5-count fidelity tolerance. The sampled command therefore had no
+continuous-profile overshoot; the extra negative count is quantization-level
+endpoint error. The offline-faithful profile predicts peak 7.50°/s and
+9.2376°/s² on the 10° reversal leg, with neither configured limit active.
+Finite differences of the sparse UART command samples showed apparent spikes
+up to about 10.46°/s and 96.6°/s²; these are quantization/sampling artifacts,
+not calibrated actuator limits.
+
+Endpoint-hold feedback reached +10 counts (+2.9297°) and −22 counts
+(−6.4453°); the raw negative peak was −23 counts (−6.7383°). The settled
+return was 2 counts (0.5859°) below the starting feedback count, within the
+5-count return gate. Feedback validity was 100%, with 162 unique samples at
+17.10 Hz; feedback age was P50/P95/max 3/26/78 ms and stale fraction 0%.
+Voltage was 8.0–8.1 V, peak raw load was 1273, and raw speed fields remain
+uncalibrated diagnostics (`speed_cmd_raw=350` is a runtime command field).
+
+The manifest records `status=conditioning_complete`,
+`physical_motion_started=true`, `conditioning_passed=true`,
+`formal_run_started=false`, and cleanup completed (`mlab stop`, polling off,
+compensation off). The corrected command is therefore suitable as a
+preconditioning motion for a later supervised experiment. Compared with the
+older hw1 capture, c1 must be treated as a separate protocol: hw1 used the
+infeasible 1,000 ms profile. C1 has faithful command endpoints and passes the
+health gate, while the positive-direction feedback remains weaker in the
+telemetry (10 versus 22 counts at the endpoint), so directional actuator
+asymmetry remains the next hypothesis rather than a trajectory-generation
+failure.
+
+No human visual observation was included in the terminal record after this
+run, so smoothness, sound/vibration, and subjective direction visibility are
+intentionally left unclassified rather than inferred. No formal +3° run,
+negative conditioning, retry, or EEPROM/PID/dead-zone/startup-force change was
+performed.
+
+## 2026-09-17 — Conditioned J2 +3° gate stopped before formal run (c1)
+
+The host firmware checkout was at
+`feat/scs009-dynamics-characterization` commit
+`c91de1ded8b553ca3b03953f7a91b7e28782cca0`; the only difference from the
+flashed runtime commit was the engineering-log documentation commit. The
+device was not reflashed. ESP-IDF monitor readiness was rechecked first: the
+device reported protocol 2, experiments `0|1|2|3|4|5`, `reversal=1`, all five
+servos online, zero errors/stale flags, and ELF SHA
+`ec3fd0859ea989e336c6024a2ca766770448f8edabe1d1767a1d0dcccdb4986c`.
+
+The immutable capture is under
+`backups/motion-lab-conditioned-j2-plus3-2026-09-17-c1/`. Exactly one
+conditioning command was attempted:
+
+```text
+mlab run 5 2 2 5 2500 0 8 30 250
+```
+
+The generated command remained faithful to the corrected profile: requested
+±17.0667 counts (±5°), held +17 counts (+4.9805°) and −18 counts (−5.2734°),
+with endpoint errors 0.0667 and 0.9333 counts respectively. Feedback reached
+only +4 counts (+1.1719°) at the positive endpoint and −20 counts (−5.8594°)
+at the negative endpoint (raw negative peak −21 counts). The settled return
+was +1 count (+0.2930°) from the starting feedback count.
+
+Conditioning telemetry remained healthy: 100% valid rows, 163 unique samples
+at 17.12 Hz, feedback-age P50/P95/max 3/17/78 ms, stale fraction 0%, voltage
+7.9–8.1 V, and peak raw load 1303. Raw speed values remain uncalibrated; the
+runtime `speed_cmd_raw` field was 350. The health gate failed only because the
+positive feedback excursion (4 counts) was below 50% of the actual +17-count
+command endpoint (`4.00 < 8.50`).
+
+The harness stopped fail-closed before the formal command: the manifest records
+`status=conditioning_failed`, `physical_motion_started=true`,
+`conditioning_passed=false`, `formal_run_started=false`, and
+`executed_runs=0`. No `mlab run 4 ...` command was sent. Cleanup completed
+(`mlab stop`, polling off, compensation off), and the serial port was released.
+The corrected conditioning trajectory itself is suitable and command-faithful,
+but this run shows that the positive-direction conditioning response is not
+repeatable: the prior corrected c1 conditioning capture reached +10 counts
+under the same nominal protocol, whereas this capture reached +4 counts. A
+conditioned formal +3° comparison against cold r1/r2 is therefore not yet
+valid; the next hypothesis is direction-dependent/stiction or intermittent
+actuator response, not command-profile distortion.
+
+No human visual observation was supplied in the terminal record, so visibility,
+smoothness, sound/vibration, and return quality are left unclassified. No
+formal +3° run, retry, parameter tuning, EEPROM write, or additional physical
+motion was performed.
+
+## 2026-09-17 — First supervised ±8° conditioning / health-motion validation
+
+The host plan was verified at PR #1 commit
+`f3de25d29b221d2363b58b228d29a39035fbf26d`; only host-side harness,
+documentation, and tests differ from the already flashed runtime image. The
+device was checked through ESP-IDF monitor before motion and still reported
+protocol 2, experiments `0|1|2|3|4|5`, `reversal=1`, all five servos online,
+zero errors/stale flags, and ELF SHA
+`ec3fd0859ea989e336c6024a2ca766770448f8edabe1d1767a1d0dcccdb4986c`.
+
+Exactly one supervised conditioning-only command was sent:
+
+```text
+mlab run 5 2 2 8 4000 0 8 30 250
+```
+
+The immutable capture is under
+`backups/motion-lab-conditioning-only-2026-09-17-positive-health8-hw1/`.
+The requested ±8° endpoints are ±27.3067 counts. The generated command held
++27 counts (+7.9102°) and −28 counts (−8.2031°), with endpoint errors of
+0.3067 and 0.6933 counts (0.0898° and 0.2031°); both are inside the 1.5-count
+fidelity tolerance and show no material command overshoot beyond quantization.
+
+Feedback reached +17 counts (+4.9805°) and −32 counts (−9.3750°); the raw
+negative peak was −33 counts. The settled return was −3 counts (−0.8789°)
+from the starting feedback count, within the 5-count return gate. Feedback was
+100% valid with 237 unique samples at 16.90 Hz; age P50/P95/max was 3/31/73 ms
+and stale fraction 0%. Voltage during the motion was 7.6–7.9 V, peak raw load
+was 1273, and raw speed remains an uncalibrated diagnostic (`speed_cmd_raw=350`).
+
+The unchanged 50% health gate required at least 13.5 counts (3.9551°) for the
+quantized +27-count positive endpoint and 14.0 counts (4.1016°) for the
+quantized −28-count endpoint. Both directions passed, so the manifest records
+`status=conditioning_complete`, `physical_motion_started=true`,
+`conditioning_passed=true`, `formal_run_started=false`, and cleanup completed
+(`mlab stop`, polling off, compensation off). This is evidence that the ±8°
+profile is a command-faithful and telemetry-healthy health motion; it is not a
+small-signal capability measurement, and no formal +3° run was started.
+
+The terminal record contains no post-run human description of visibility,
+directional smoothness, sound/vibration, or return appearance. Visual
+acceptance is therefore left pending rather than inferred from telemetry. If
+the user confirms both directions were clearly visible and physically normal,
+the ±8° motion can be adopted as the standard preconditioner; otherwise stop
+preconditioning characterization and investigate the J2 direction-dependent
+response without increasing amplitude automatically.
+
+## 2026-09-17 — Conditioning / health-motion protocol revised to ±8°
+
+The corrected ±5° conditioning command was valid offline, but it was not a
+reliable health motion on J2. Two identical corrected-profile captures emitted
++17/−18 counts; feedback reached +10/−22 counts in one and only +4/−20 counts
+in the next. The user also reported that the movement was barely visible.
+Because ±5° overlaps the positive small-signal/breakaway phenomenon we are
+trying to measure, it is retired as the standard preconditioner. The prior
+captures remain immutable evidence and are not reinterpreted or deleted.
+
+The new conditioning / health-motion candidate is evaluated offline only in
+this change (no flash and no physical motion):
+
+```text
+center -> +8° -> −8° -> center
+transition = 4000 ms; hold = 1000 ms
+max velocity = 8°/s; max acceleration = 30°/s²
+total duration = 14000 ms
+```
+
+The faithful deterministic simulator produces requested ±8.000° (±27.3067
+counts), generated command endpoints +8.000°/−8.000° (+27/−27 counts), zero
+endpoint-hold error, zero command overshoot, and exact return to center. The
+16° reversal leg has analytical peak velocity 7.5000°/s and peak acceleration
+5.7735°/s²; neither configured limit is active. The ±8° excursion remains
+inside the existing ±10° Motion Lab safety envelope.
+
+The health gate still compares feedback with the actual generated command
+endpoint, keeping requested, commanded, and achieved excursions separate. At
+the nominal ±8° request, the unchanged 50% threshold is 13.6533 counts,
+equivalent to 4.0000°. For a quantized ±27-count command endpoint it is 13.5
+counts (3.9551°). This motion is intended to break frictional history, establish
+directional preload, verify obvious bidirectional motion, and return to center
+from the negative side before a positive formal +3° test; it is not used to
+estimate small-signal capability.
+
+## 2026-09-17 — Conditioned J2 +3° after ±8° health motion (health8-c1)
+
+The host checkout was verified at PR #1 branch
+`feat/scs009-dynamics-characterization`, commit
+`c6783288678292a5fbad17661438aeab764dbcd1`. The device was not reflashed;
+ESP-IDF monitor readiness confirmed protocol 2, experiments `0|1|2|3|4|5`,
+`reversal=1`, all five servos online, zero error/stale flags, and the known
+runtime ELF SHA
+`ec3fd0859ea989e336c6024a2ca766770448f8edabe1d1767a1d0dcccdb4986c`.
+
+The immutable capture is under
+`backups/motion-lab-conditioned-j2-plus3-2026-09-17-health8-c1/`. Exactly one
+conditioning-plus-formal attempt was made with `--max-runs 1`:
+
+```text
+conditioning: mlab run 5 2 2 8 4000 0 8 30 250
+formal:       mlab run 4 2 2 3 3000 0 8 30 250
+```
+
+The ±8° conditioning motion passed its existing health gate. Its generated
+commands reached +27/−28 counts (+7.9102/−8.2031°); feedback reached +16/−31
+counts (+4.6875/−9.0820°), and the settled return was exactly 0 counts from
+the conditioning start. Conditioning feedback was 100% valid at 16.96 Hz;
+feedback age P50 was 3 ms, P95 35 ms, and maximum 78 ms; stale rows were 0.
+Voltage was 7.7–8.0 V and peak raw load was 1303. These values are kept
+separate from the formal small-signal metrics.
+
+The formal J2 positive +3° command requested 10.24 counts (3.0000°) and
+actually generated a +10-count (+2.9297°) endpoint. Feedback achieved only
++1 count (+0.2930°), an achieved/commanded ratio of 0.10; during the command
+hold, feedback remained approximately 146–151 while the commanded endpoint
+was 160 (starting feedback 150). Final feedback was 149, or −1 count
+(−0.2930°) from the starting position. No command overshoot or feedback jump
+event was reported, but settling/onset were not meaningful after the safety
+abort. Tracking RMS error was 2.4683°, peak error 4.1016°, exceeding the
+2.25° small-motion sanity guard. The run therefore stopped fail-closed after
+the single formal command; this guard is not a calibrated actuator limit.
+
+Formal telemetry was 100% valid at 16.78 Hz; feedback age P50/P95/max was
+3/36/117 ms and stale fraction 0%. Voltage was 7.9–8.1 V, peak raw load was
+1243, and raw speed values (0–32818) remain uncalibrated diagnostics. The
+manifest records `conditioning_passed=true`, `formal_run_started=true`,
+`status=aborted`, and cleanup completed (`mlab stop`, polling off,
+compensation off). No retry, negative formal test, EEPROM write, or servo
+parameter change was performed.
+
+Compared only with the formal cold baselines, the conditioned result was
+`1/10` feedback counts versus cold r1 `7/10` and cold r2 `0/10`. One run is
+not a repeatability claim. The result does not support an improvement from
+the ±8° preconditioner; substantial small-signal loss remains, so internal
+dead-zone/startup-force or low-speed stiction/control behavior remain stronger
+hypotheses. The conditioning motion itself passed, but the formal run's
+tracking guard failure means no further physical experiment should be started
+automatically.
+
+The previous ±8° visual observation is preserved: both directions showed a
+similar stick/static-friction-like hesitation, with no obvious qualitative
+direction difference by eye. No new post-run human visual description was
+available in the terminal record, so visibility, smoothness, sound/vibration,
+and subjective comparison of this run remain unclassified rather than
+inferred.
