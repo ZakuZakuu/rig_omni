@@ -243,16 +243,41 @@ prelude. Enable it explicitly for a future formal run with
 `--precondition positive` (or `negative`). The positive protocol sends:
 
 ```text
-mlab run 5 2 <joint> 5 1000 0 8 30 250
+mlab run 5 2 <joint> 5 2500 0 8 30 250
 ```
 
 which is the existing minimum-jerk reversal sweep:
 `center -> +5° -> -5° -> center`. The mirrored negative protocol uses `-5°`
-and follows `center -> -5° -> +5° -> center`. The host then observes a quiet
-2-second settle interval and takes a separate read-only `mlab status` snapshot
-before any formal measurement. The conditioning excursion is deliberately
-inside the existing ±10° Motion Lab envelope; it does not change compensation
-or persistent servo parameters.
+and follows `center -> -5° -> +5° -> center`. The selected 2,500 ms transition
+is intentional: with the existing 8°/s and 30°/s² caps, the ideal reversal
+peak is 7.5°/s and 9.24°/s², so the command generator does not distort either
+endpoint. Total conditioning time is 9,500 ms, followed by a quiet 2-second
+settle interval and a separate read-only `mlab status` snapshot before any
+formal measurement. The conditioning excursion is inside the existing ±10°
+Motion Lab envelope; it does not change compensation or persistent servo
+parameters.
+
+Before supervised hardware use, run the deterministic offline feasibility check
+(no serial port is opened):
+
+```bash
+python3 tools/motion_lab/conditioning_trajectory.py --transition-ms 1000
+python3 tools/motion_lab/conditioning_trajectory.py --transition-ms 2500
+```
+
+The first command is expected to report `DISTORTED`; the selected profile must
+report `FEASIBLE`. It reports nominal/requested endpoints, generated command
+endpoints, peak command velocity/acceleration, endpoint-hold error, and
+overshoot in degrees and encoder counts.
+
+The deterministic comparison is recorded here for traceability: at 1,000 ms
+the simulated command reaches approximately +5.689°/−6.049° (about +19/−20
+counts), with velocity and acceleration caps active, endpoint-hold errors of
+about 2.35/10.85 counts, and negative overshoot of about 3.58 counts. At the
+selected 2,500 ms transition it reaches +5.000°/−5.000° (+17/−17 counts),
+with 0-count hold error/overshoot and analytical peaks of 7.50°/s and
+9.24°/s². These are command-reference diagnostics, not hardware capability
+claims.
 
 The harness remains dry-run by default. A future supervised positive run would
 opt in explicitly, for example:
@@ -289,9 +314,14 @@ Conditioning is a health/preload gate, not part of formal-run metrics. It must
 show fresh feedback, telemetry-confirmed motion in both directions, no status
 error or stale flag, voltage within the existing observational ~8 V review
 band, raw load below the provisional anomaly gate, and return within five
-encoder counts of the preconditioning center. If any gate fails, the formal
-run is not started. Reports keep `conditioning`, `preflight`, and formal `runs`
-as separate sections and record `formal_run_started` explicitly.
+encoder counts of the preconditioning center. The gate compares feedback with
+the command endpoint actually generated and held (50% minimum), while also
+recording the nominal requested ±5° endpoint. If the command endpoint itself
+differs from the request by more than roughly 1.5 counts, the result is marked
+an experimental-design distortion and is not a clean breakaway conclusion. If
+any gate fails, the formal run is not started. Reports keep `conditioning`,
+`preflight`, and formal `runs` as separate sections and record
+`formal_run_started` explicitly.
 
 Conditioning metrics report the command positions actually emitted in the
 capture (positive/negative excursion in counts and degrees), the corresponding

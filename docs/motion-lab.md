@@ -203,7 +203,10 @@ after reviewing the previous capture; the plan itself remains deterministic
 and begins with the gentle J2 `+3°` condition before low-speed, reversal, or
 faster tiers.
 
-The first planned movement is a small J2 `+3` degree endpoint using
+The conditioning prelude uses the feasible reversal profile
+`mlab run 5 2 <joint> 5 2500 0 8 30 250` (total 9.5 s), preserving
+`center -> +5° -> -5° -> center` without velocity/acceleration distortion.
+The first formal movement remains a small J2 `+3` degree endpoint using
 `mlab run 4 2 2 3 3000 0 8 30 250`, followed by a one-second hold and a
 return. Before it, the harness requires parseable status for IDs 1–5, a
 completed read-only `mlab params` snapshot, and an acknowledged voltage reply.

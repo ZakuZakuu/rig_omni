@@ -33,6 +33,11 @@ try:
 except ImportError:  # pragma: no cover - import path used by package runners
     from tools.motion_lab.analyze_stutter import parse_capture
 
+try:
+    from conditioning_trajectory import ConditioningConfig, evaluate as evaluate_conditioning_profile
+except ImportError:  # pragma: no cover - import path used by package runners
+    from tools.motion_lab.conditioning_trajectory import ConditioningConfig, evaluate as evaluate_conditioning_profile
+
 
 COUNTS_PER_DEG = 1024.0 / 300.0
 DEG_PER_COUNT = 1.0 / COUNTS_PER_DEG
@@ -47,12 +52,19 @@ DEFAULT_DEADBAND_MDEG = 250
 DEFAULT_POLL_PERIOD_MS = 5
 MOTION_LAB_CAPABILITY_PROTOCOL = 2
 CONDITIONING_AMPLITUDE_DEG = 5
-CONDITIONING_TRANSITION_MS = 1000
+CONDITIONING_TRANSITION_MS = 2500
 CONDITIONING_HOLD_MS = DEFAULT_HOLD_MS
 CONDITIONING_SETTLE_MS = 2000
 CONDITIONING_MAX_VELOCITY_DEG_S = 8
 CONDITIONING_MAX_ACCELERATION_DEG_S2 = 30
-CONDITIONING_MIN_EXCURSION_COUNTS = 0.5 * CONDITIONING_AMPLITUDE_DEG * COUNTS_PER_DEG
+# The health gate remains a conservative 50% of the command actually held at
+# each endpoint. The nominal 5-degree request is reported separately and is
+# never substituted for the command delivered by the generator.
+CONDITIONING_MIN_EXCURSION_FRACTION = 0.50
+# A generated endpoint is considered faithful when it is within roughly one
+# encoder count of the requested 5-degree reference. Outside this bound the
+# run is still preserved as evidence, but cannot be a clean conditioning gate.
+CONDITIONING_COMMAND_ENDPOINT_TOLERANCE_COUNTS = 1.5
 CONDITIONING_RETURN_TOLERANCE_COUNTS = 5.0
 ONSET_THRESHOLD_COUNTS = 3.0
 ONSET_COMMAND_THRESHOLD_COUNTS = 1.0
@@ -714,6 +726,13 @@ def _conditioning_entry(args: argparse.Namespace, direction: str) -> dict:
     if direction not in ("positive", "negative"):
         raise ValueError("conditioning direction must be positive or negative")
     sign = 1 if direction == "positive" else -1
+    offline_profile = evaluate_conditioning_profile(ConditioningConfig(
+        amplitude_deg=CONDITIONING_AMPLITUDE_DEG,
+        transition_ms=CONDITIONING_TRANSITION_MS,
+        hold_ms=CONDITIONING_HOLD_MS,
+        max_velocity_deg_s=CONDITIONING_MAX_VELOCITY_DEG_S,
+        max_acceleration_deg_s2=CONDITIONING_MAX_ACCELERATION_DEG_S2,
+    ))
     return {
         "tier": "conditioning",
         "experiment": 5,
@@ -733,7 +752,39 @@ def _conditioning_entry(args: argparse.Namespace, direction: str) -> dict:
             if direction == "positive"
             else "center -> -5 -> +5 -> center"
         ),
+        "offline_profile": {
+            "feasible": offline_profile["feasible"],
+            "total_ms": offline_profile["total_ms"],
+            "analytical": offline_profile["analytical"],
+            "generated": offline_profile["generated"],
+            "limits": offline_profile["limits"],
+        },
     }
+
+
+def _feedback_at_command_endpoint(
+    rows: list[dict[str, float]],
+    center_count: float,
+    command_center_count: float | None,
+    endpoint_counts: float,
+    sign: float,
+) -> float | None:
+    """Return feedback excursion while the generated command is held.
+
+    Conditioning health is about the actuator response to what was actually
+    commanded. Select rows within one count of the measured command endpoint,
+    rather than comparing feedback to the nominal 5-degree request.
+    """
+
+    if command_center_count is None or endpoint_counts <= 0.0:
+        return None
+    threshold = max(0.0, endpoint_counts - CONDITIONING_COMMAND_ENDPOINT_TOLERANCE_COUNTS)
+    candidates = [
+        sign * (row["fb_pos"] - center_count)
+        for row in _valid_feedback_rows(rows)
+        if sign * (row["cmd_pos"] - command_center_count) >= threshold
+    ]
+    return max(candidates, default=None)
 
 
 def _conditioning_metrics(
@@ -756,6 +807,34 @@ def _conditioning_metrics(
     displacement = [row["fb_pos"] - center_count for row in valid]
     age_values = [row["fb_age_ms"] for row in rows if row["fb_age_ms"] < 1_000_000_000]
     target_counts = abs(float(metadata["amplitude_deg"])) * COUNTS_PER_DEG
+    commanded_positive_counts = max(0.0, max(command_displacement, default=0.0))
+    commanded_negative_counts = max(0.0, -min(command_displacement, default=0.0))
+    achieved_positive_counts = _feedback_at_command_endpoint(
+        rows,
+        center_count,
+        command_center_count,
+        commanded_positive_counts,
+        1.0,
+    )
+    achieved_negative_counts = _feedback_at_command_endpoint(
+        rows,
+        center_count,
+        command_center_count,
+        commanded_negative_counts,
+        -1.0,
+    )
+    # If no endpoint hold sample is available, retain the peak excursion as a
+    # diagnostic fallback, but make the missing hold evidence explicit.
+    peak_positive_counts = max(0.0, max(displacement, default=0.0))
+    peak_negative_counts = max(0.0, -min(displacement, default=0.0))
+    achieved_positive_counts = (
+        peak_positive_counts if achieved_positive_counts is None else achieved_positive_counts
+    )
+    achieved_negative_counts = (
+        peak_negative_counts if achieved_negative_counts is None else achieved_negative_counts
+    )
+    command_positive_error_counts = commanded_positive_counts - target_counts
+    command_negative_error_counts = commanded_negative_counts - target_counts
     feedback_rate = None
     if len(feedback_samples) >= 2 and feedback_samples[-1][0] > feedback_samples[0][0]:
         feedback_rate = (len(feedback_samples) - 1) / (
@@ -767,7 +846,13 @@ def _conditioning_metrics(
     return {
         "conditioning_direction": metadata["direction"],
         "conditioning_amplitude_deg": abs(float(metadata["amplitude_deg"])),
-        "conditioning_target_counts": target_counts,
+        # Requested is the nominal protocol input; commanded is the endpoint
+        # actually generated/emitted; achieved is feedback observed while that
+        # generated endpoint was held. Keep all three layers explicit.
+        "conditioning_requested_positive_counts": target_counts,
+        "conditioning_requested_negative_counts": target_counts,
+        "conditioning_requested_positive_deg": target_counts * DEG_PER_COUNT,
+        "conditioning_requested_negative_deg": target_counts * DEG_PER_COUNT,
         "conditioning_rows": len(rows),
         "conditioning_valid_feedback_rows": len(valid),
         "conditioning_feedback_valid_rate": len(valid) / len(rows) if rows else 0.0,
@@ -777,22 +862,28 @@ def _conditioning_metrics(
         "conditioning_feedback_age_max_ms": max(age_values, default=None),
         "conditioning_stale_rows": sum(1 for row in rows if row["stale"] != 0),
         "conditioning_command_center_count": command_center_count,
-        "conditioning_commanded_positive_counts": max(
-            0.0, max(command_displacement, default=0.0)
+        "conditioning_commanded_positive_counts": commanded_positive_counts,
+        "conditioning_commanded_negative_counts": commanded_negative_counts,
+        "conditioning_commanded_positive_deg": commanded_positive_counts * DEG_PER_COUNT,
+        "conditioning_commanded_negative_deg": commanded_negative_counts * DEG_PER_COUNT,
+        "conditioning_commanded_positive_error_counts": command_positive_error_counts,
+        "conditioning_commanded_negative_error_counts": command_negative_error_counts,
+        "conditioning_commanded_positive_error_deg": command_positive_error_counts * DEG_PER_COUNT,
+        "conditioning_commanded_negative_error_deg": command_negative_error_counts * DEG_PER_COUNT,
+        "conditioning_commanded_endpoint_tolerance_counts": CONDITIONING_COMMAND_ENDPOINT_TOLERANCE_COUNTS,
+        "conditioning_commanded_endpoint_within_tolerance": (
+            abs(command_positive_error_counts) <= CONDITIONING_COMMAND_ENDPOINT_TOLERANCE_COUNTS
+            and abs(command_negative_error_counts) <= CONDITIONING_COMMAND_ENDPOINT_TOLERANCE_COUNTS
         ),
-        "conditioning_commanded_negative_counts": max(
-            0.0, -min(command_displacement, default=0.0)
-        ),
-        "conditioning_commanded_positive_deg": (
-            max(0.0, max(command_displacement, default=0.0)) * DEG_PER_COUNT
-        ),
-        "conditioning_commanded_negative_deg": (
-            max(0.0, -min(command_displacement, default=0.0)) * DEG_PER_COUNT
-        ),
-        "conditioning_achieved_positive_counts": max(0.0, max(displacement, default=0.0)),
-        "conditioning_achieved_negative_counts": max(0.0, -min(displacement, default=0.0)),
-        "conditioning_achieved_positive_deg": max(0.0, max(displacement, default=0.0)) * DEG_PER_COUNT,
-        "conditioning_achieved_negative_deg": max(0.0, -min(displacement, default=0.0)) * DEG_PER_COUNT,
+        "conditioning_achieved_positive_counts": achieved_positive_counts,
+        "conditioning_achieved_negative_counts": achieved_negative_counts,
+        "conditioning_achieved_positive_deg": achieved_positive_counts * DEG_PER_COUNT,
+        "conditioning_achieved_negative_deg": achieved_negative_counts * DEG_PER_COUNT,
+        "conditioning_feedback_peak_positive_counts": peak_positive_counts,
+        "conditioning_feedback_peak_negative_counts": peak_negative_counts,
+        "conditioning_min_excursion_fraction": CONDITIONING_MIN_EXCURSION_FRACTION,
+        "conditioning_health_required_positive_counts": commanded_positive_counts * CONDITIONING_MIN_EXCURSION_FRACTION,
+        "conditioning_health_required_negative_counts": commanded_negative_counts * CONDITIONING_MIN_EXCURSION_FRACTION,
         "conditioning_return_feedback_count": settled_feedback_count,
         "conditioning_return_error_counts": return_error_counts,
         "conditioning_return_error_deg": (
@@ -834,10 +925,30 @@ def _conditioning_health_reasons(summary: dict, args: argparse.Namespace) -> lis
                 "this is not a validated electrical safety limit"
             )
             break
-    if summary["conditioning_achieved_positive_counts"] < CONDITIONING_MIN_EXCURSION_COUNTS:
-        reasons.append("conditioning positive excursion did not pass the breakaway health gate")
-    if summary["conditioning_achieved_negative_counts"] < CONDITIONING_MIN_EXCURSION_COUNTS:
-        reasons.append("conditioning negative excursion did not pass the breakaway health gate")
+    if not summary["conditioning_commanded_endpoint_within_tolerance"]:
+        reasons.append(
+            "conditioning command endpoint differs from the nominal request by more than "
+            f"{CONDITIONING_COMMAND_ENDPOINT_TOLERANCE_COUNTS:g} counts; classify as "
+            "experimental-design distortion rather than a servo breakaway result"
+        )
+    required_positive = summary["conditioning_health_required_positive_counts"]
+    required_negative = summary["conditioning_health_required_negative_counts"]
+    if summary["conditioning_commanded_positive_counts"] <= 0.0:
+        reasons.append("conditioning positive command endpoint is unavailable")
+    elif summary["conditioning_achieved_positive_counts"] < required_positive:
+        reasons.append(
+            "conditioning positive feedback excursion is below 50% of the actual "
+            f"commanded endpoint ({summary['conditioning_achieved_positive_counts']:.2f} "
+            f"< {required_positive:.2f} counts)"
+        )
+    if summary["conditioning_commanded_negative_counts"] <= 0.0:
+        reasons.append("conditioning negative command endpoint is unavailable")
+    elif summary["conditioning_achieved_negative_counts"] < required_negative:
+        reasons.append(
+            "conditioning negative feedback excursion is below 50% of the actual "
+            f"commanded endpoint ({summary['conditioning_achieved_negative_counts']:.2f} "
+            f"< {required_negative:.2f} counts)"
+        )
     if not summary["conditioning_settle_status_parse_ok"]:
         reasons.append("conditioning settle status missing or incomplete")
     if summary["conditioning_settle_status_errors"]:
@@ -1047,8 +1158,74 @@ def _write_json(path: Path, value: dict) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=False) + "\n", encoding="utf-8")
 
 
+def _reanalyze_conditioning(output_dir: Path, manifest: dict, *, max_load_raw: float) -> dict:
+    """Recompute conditioning metrics without touching the raw UART logs."""
+
+    conditioning = manifest.get("conditioning", {})
+    captures = conditioning.get("captures", [])
+    motion_capture = next((item for item in captures if item.get("name") == "conditioning_motion.log"), None)
+    settle_capture = next((item for item in captures if item.get("name") == "conditioning_settle_status.log"), None)
+    preflight = manifest.get("preflight", {}).get("decision") or {}
+    records = preflight.get("status", {}).get("records", [])
+    if not conditioning.get("enabled") or motion_capture is None or settle_capture is None or not records:
+        return conditioning
+    try:
+        joint = int(manifest.get("joint_selection", {}).get("joint", DEFAULT_JOINT))
+        direction = str(conditioning.get("direction") or "positive")
+        entry = {
+            **_conditioning_entry(argparse.Namespace(
+                joint=joint,
+                deadband_mdeg=DEFAULT_DEADBAND_MDEG,
+            ), direction),
+            "run": "conditioning",
+        }
+        center_record = next((record for record in records if record.get("id") == joint + 1), None)
+        if center_record is None:
+            return conditioning
+        settle_status = _parse_status_capture(output_dir / settle_capture["log"])
+        settle_record = next((record for record in settle_status.get("records", []) if record["id"] == joint + 1), None)
+        summary = _conditioning_metrics(
+            _raw_rows(output_dir / motion_capture["log"], joint),
+            entry,
+            float(center_record["fb_pos"]),
+            None if settle_record is None else float(settle_record["fb_pos"]),
+            settle_status,
+        )
+        reasons = _conditioning_health_reasons(summary, argparse.Namespace(max_load_raw=max_load_raw))
+        summary["conditioning_health_reasons"] = reasons
+        summary["conditioning_passed"] = not reasons
+        updated = dict(conditioning)
+        updated["metrics"] = summary
+        updated["conditioning_passed"] = summary["conditioning_passed"]
+        updated["interpretation"] = {
+            "command_profile_fidelity": (
+                "faithful"
+                if summary["conditioning_commanded_endpoint_within_tolerance"]
+                else "distorted"
+            ),
+            "physical_breakaway_conclusion": (
+                "supported_by_health_gate"
+                if summary["conditioning_commanded_endpoint_within_tolerance"]
+                and summary["conditioning_passed"]
+                else "not_supported; command-generation distortion is an experimental-design confound"
+            ),
+            "note": (
+                "conditioning_passed=false is not evidence of positive-direction servo failure "
+                "when the generated command endpoint itself missed the requested reference"
+            ),
+        }
+        return updated
+    except (OSError, KeyError, TypeError, ValueError):
+        # Analysis-only mode must preserve the existing manifest if a legacy
+        # capture lacks the newer conditioning fields.
+        return conditioning
+
+
 def _analyze_manifest(output_dir: Path, manifest_path: Path, *, max_load_raw: float) -> dict:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["conditioning"] = _reanalyze_conditioning(
+        output_dir, manifest, max_load_raw=max_load_raw
+    )
     metrics: list[dict] = []
     events: list[dict] = []
     run_rows: list[tuple[dict, list[dict[str, float]]]] = []

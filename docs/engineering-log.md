@@ -635,22 +635,24 @@ valid rate was 100%, unique sample rate 16.29 Hz, feedback-age P50/P95/max was
 3/49/107 ms, stale fraction was 0%, voltage was 8.0–8.1 V, and peak raw load
 was 1243. Raw speed values remain uncalibrated diagnostics.
 
-The positive breakaway health gate failed because +8 counts was just below the
-provisional 50% threshold (8.53 counts); the negative direction passed. The
-manifest records `physical_motion_started=true`, `conditioning_passed=false`,
-`formal_run_started=false`, and `executed_runs=0`. Cleanup (`mlab stop`, polling
-off, compensation off) completed. No formal +3° run, negative conditioning, or
-automatic retry was performed. No human visual observation was supplied in the
-terminal record; visual smoothness/any abnormal sound therefore remains
-unclassified rather than inferred from telemetry.
+The manifest records `physical_motion_started=true`,
+`conditioning_passed=false`, `formal_run_started=false`, and `executed_runs=0`;
+cleanup (`mlab stop`, polling off, compensation off) completed. The original
+health result must not be read as a clean positive-direction breakaway failure:
+the 1,000 ms minimum-jerk reference is dynamically infeasible at an 8°/s cap.
+The ideal reversal leg alone requires about 18.75°/s, and a faithful offline
+simulation of the firmware command integrator produces distorted endpoints
+(approximately +5.69° / −6.05°, with velocity and acceleration limits active).
+That explains the emitted +19/−21 counts versus the nominal ±17.07 counts;
+the +8-count feedback excursion is therefore evidence from a confounded
+experiment, not an actuator capability verdict. The raw telemetry still
+confirms physical reversal response, healthy feedback, and exact return. No
+formal +3° run, negative conditioning, or automatic retry was performed. No
+human visual observation was supplied in the terminal record.
 
-Conclusion: telemetry confirms a real reversal response and exact return, but
-this sequence is not yet an accepted conditioning prelude under the current
-health gate because the positive leg under-traveled. The next hypothesis is to
-have the human review the visible positive leg and decide whether to repeat the
-same conditioning once for repeatability or investigate the positive-direction
-breakaway/measurement behavior before any conditioned +3° experiment. No
-parameter tuning or compensation is justified by this single run.
+The conditioning protocol is corrected offline before another hardware run:
+the same 8°/s and 30°/s² limits use a 2,500 ms transition, giving a 9,500 ms
+center → +5° → −5° → center sequence with no simulated endpoint overshoot.
 
 ## 2026-09-17 — Stock idle-motion isolation check
 
