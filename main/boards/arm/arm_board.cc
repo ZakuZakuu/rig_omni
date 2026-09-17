@@ -161,8 +161,14 @@ void PrintCreatureStreamHelp() {
 void PrintCreatureStreamState(uint64_t now_us) {
     CreatureStreamSnapshot snapshot = {};
     creature_stream_get_snapshot(&snapshot, now_us);
+    // Keep the internal microsecond timestamp 64-bit for safety calculations,
+    // but print a uint32 millisecond projection: ESP-IDF Nano printf does not
+    // implement the 64-bit integer formatters. Wraparound is acceptable for
+    // this diagnostic field; age calculations remain uint64-based internally.
+    const uint32_t last_target_ms =
+        static_cast<uint32_t>(snapshot.last_target_us / 1000ULL);
     printf("CREATURE_STATE,owner=%s,holding=%d,timed_out=%d,seq_valid=%d,last_seq=%lu,"
-           "target_age_ms=%lu,last_target_ms=%llu,target_mdeg=%ld|%ld|%ld|%ld|%ld,"
+           "target_age_ms=%lu,last_target_ms=%lu,target_mdeg=%ld|%ld|%ld|%ld|%ld,"
            "target_pos=%d|%d|%d|%d|%d,fb_pos=%d|%d|%d|%d|%d,"
            "fb_mdeg=%ld|%ld|%ld|%ld|%ld,fb_age_ms=%lu|%lu|%lu|%lu|%lu,fb_stale=%d|%d|%d|%d|%d,"
            "servo_error=%d|%d|%d|%d|%d,voltage_v=%.2f\r\n",
@@ -173,7 +179,7 @@ void PrintCreatureStreamState(uint64_t now_us) {
            snapshot.sequence_valid ? 1 : 0,
            static_cast<unsigned long>(snapshot.last_sequence),
            static_cast<unsigned long>(snapshot.target_age_ms),
-           static_cast<unsigned long long>(snapshot.last_target_us / 1000ULL),
+           static_cast<unsigned long>(last_target_ms),
            static_cast<long>(snapshot.target_mdeg[0]), static_cast<long>(snapshot.target_mdeg[1]),
            static_cast<long>(snapshot.target_mdeg[2]), static_cast<long>(snapshot.target_mdeg[3]),
            static_cast<long>(snapshot.target_mdeg[4]),
@@ -440,7 +446,8 @@ private:
             
             if (button_press_start_time_ > 0) {
                 int64_t press_duration = (esp_timer_get_time() / 1000) - button_press_start_time_;
-                ESP_LOGI(TAG, "Button released, press duration: %lld ms", (long long)press_duration);
+                ESP_LOGI(TAG, "Button released, press duration: %ld ms",
+                         static_cast<long>(press_duration));
                 
                 if (press_duration >= kLongPressResetMs) {
                     ESP_LOGW(TAG, "Long press detected (>3s), resetting NVS...");
@@ -520,7 +527,8 @@ private:
             esp_timer_stop(touch_long_press_timer_);
             if (touch_press_start_time_ > 0) {
                 int64_t press_duration = (esp_timer_get_time() / 1000) - touch_press_start_time_;
-                ESP_LOGI(TAG, "Touch released, duration: %lld ms", (long long)press_duration);
+                ESP_LOGI(TAG, "Touch released, duration: %ld ms",
+                         static_cast<long>(press_duration));
                 if (press_duration >= kTouchLongPressResetMs) {
                     ESP_LOGW(TAG, "Touch long press (>8s), clearing NVS + calibration and restarting...");
                     auto& app = Application::GetInstance();

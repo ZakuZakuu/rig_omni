@@ -61,6 +61,13 @@ The ACK includes ownership, sequence, target age and feedback freshness.
 the same `(FbPos - ZeroPos) * M_A / M_N` conversion as firmware control).
 Host code must use `fb_mdeg` for `q_rad`; raw counts are diagnostic only.
 
+The internal target timestamp remains a 64-bit microsecond value for watchdog
+and freshness calculations. The machine-readable `last_target_ms` field is an
+explicitly narrowed `uint32` millisecond diagnostic projection (and may wrap
+after a long uptime) so it remains compatible with the ESP-IDF Nano `printf`
+configuration. Do not widen this formatter back to a 64-bit `%ll` conversion;
+preserve the internal timestamp type instead.
+
 `creature stop` enters HOLD and continues forwarding the current measured
 posture when available. It does not snap to IK or neutral. `creature release`
 ends ownership, cancels action flags, and restores the idle enable state that

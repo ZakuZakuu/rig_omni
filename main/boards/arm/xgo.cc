@@ -598,9 +598,13 @@ void xgo_dump_factory_parameters() {
 void xgo_print_servo_status() {
     printf("MLAB_SERVO_STATUS,id,error_hex,last_error_hex,last_error_ts_ms,error_count,fb_pos,fb_speed_raw,fb_load_raw,stale\r\n");
     for (int i = 0; i < MOTOR_NUM; ++i) {
-        printf("MLAB_SERVO_STATUS,%d,%02X,%02X,%llu,%lu,%d,%d,%d,%d\r\n",
+        // Keep FbLastErrorUs 64-bit internally; expose a uint32 millisecond
+        // projection because Nano printf has no 64-bit integer formatter.
+        const uint32_t last_error_ts_ms =
+            static_cast<uint32_t>(motor[i].FbLastErrorUs / 1000ULL);
+        printf("MLAB_SERVO_STATUS,%d,%02X,%02X,%lu,%lu,%d,%d,%d,%d\r\n",
                i + 1, motor[i].FbError, motor[i].FbLastError,
-               static_cast<unsigned long long>(motor[i].FbLastErrorUs / 1000ULL),
+               static_cast<unsigned long>(last_error_ts_ms),
                static_cast<unsigned long>(motor[i].FbErrorCount),
                motor[i].FbPos, static_cast<int>(motor[i].FbSpd), motor[i].FbTor,
                motor[i].FbStale ? 1 : 0);
