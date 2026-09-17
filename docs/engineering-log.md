@@ -670,3 +670,65 @@ To make the state controllable from the ESP-IDF monitor without an MCP client,
 the UART console now provides `mlab idle off|on|status`. This is a RAM-only
 switch; reboot restores the upstream default (enabled), and it does not write
 servo EEPROM or alter Motion Lab's temporary isolation/restore behavior.
+
+## 2026-09-17 — Corrected conditioning-only validation (c1)
+
+The firmware branch `feat/scs009-dynamics-characterization` was verified at
+host commit `0f6c2f8956c84a07eaeddbc8381233c2f096ea27`. It was rebuilt with
+ESP-IDF v5.5.3, flashed through the ESP-IDF monitor, and verified before the
+experiment. The device reported protocol 2, experiments `0|1|2|3|4|5`,
+`reversal=1`, and image ELF SHA
+`ec3fd0859ea989e336c6024a2ca766770448f8edabe1d1767a1d0dcccdb4986c`.
+Read-only `mlab status` reported all five IDs online with zero current or
+latched errors and no stale flags. `mlab idle status` reported enabled, then
+`mlab idle off` was used only to simplify observation; Motion Lab direct-joint
+ownership independently isolates idle during the run.
+
+Exactly one supervised physical command was sent after the deployment gate:
+
+```text
+mlab run 5 2 2 5 2500 0 8 30 250
+```
+
+The immutable capture is under
+`backups/motion-lab-conditioning-only-2026-09-17-positive-c1/`. The protocol
+was the corrected minimum-jerk sequence:
+`center → +5° → −5° → center`, 2,500 ms transitions, 1,000 ms holds, an 8°/s
+velocity cap, and a 30°/s² acceleration cap (9,500 ms total).
+
+Requested excursions were ±17.0667 counts (±5.0000°). The generated command
+held +17 counts (+4.9805°) and −18 counts (−5.2734°): endpoint errors were
+0.0667 counts (0.0195°) positive and 0.9333 counts (0.2734°) negative, both
+inside the 1.5-count fidelity tolerance. The sampled command therefore had no
+continuous-profile overshoot; the extra negative count is quantization-level
+endpoint error. The offline-faithful profile predicts peak 7.50°/s and
+9.2376°/s² on the 10° reversal leg, with neither configured limit active.
+Finite differences of the sparse UART command samples showed apparent spikes
+up to about 10.46°/s and 96.6°/s²; these are quantization/sampling artifacts,
+not calibrated actuator limits.
+
+Endpoint-hold feedback reached +10 counts (+2.9297°) and −22 counts
+(−6.4453°); the raw negative peak was −23 counts (−6.7383°). The settled
+return was 2 counts (0.5859°) below the starting feedback count, within the
+5-count return gate. Feedback validity was 100%, with 162 unique samples at
+17.10 Hz; feedback age was P50/P95/max 3/26/78 ms and stale fraction 0%.
+Voltage was 8.0–8.1 V, peak raw load was 1273, and raw speed fields remain
+uncalibrated diagnostics (`speed_cmd_raw=350` is a runtime command field).
+
+The manifest records `status=conditioning_complete`,
+`physical_motion_started=true`, `conditioning_passed=true`,
+`formal_run_started=false`, and cleanup completed (`mlab stop`, polling off,
+compensation off). The corrected command is therefore suitable as a
+preconditioning motion for a later supervised experiment. Compared with the
+older hw1 capture, c1 must be treated as a separate protocol: hw1 used the
+infeasible 1,000 ms profile. C1 has faithful command endpoints and passes the
+health gate, while the positive-direction feedback remains weaker in the
+telemetry (10 versus 22 counts at the endpoint), so directional actuator
+asymmetry remains the next hypothesis rather than a trajectory-generation
+failure.
+
+No human visual observation was included in the terminal record after this
+run, so smoothness, sound/vibration, and subjective direction visibility are
+intentionally left unclassified rather than inferred. No formal +3° run,
+negative conditioning, retry, or EEPROM/PID/dead-zone/startup-force change was
+performed.
