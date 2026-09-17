@@ -53,8 +53,10 @@ def reversal_reference(elapsed_ms: int, transition_ms: int, hold_ms: int) -> flo
 
 @dataclass(frozen=True)
 class ConditioningConfig:
-    amplitude_deg: float = 5.0
-    transition_ms: int = 2500
+    """Parameters for the conditioning / health-motion reversal sweep."""
+
+    amplitude_deg: float = 8.0
+    transition_ms: int = 4000
     hold_ms: int = 1000
     max_velocity_deg_s: float = 8.0
     max_acceleration_deg_s2: float = 30.0
@@ -66,7 +68,7 @@ class ConditioningConfig:
 
 
 def analytical_peaks(config: ConditioningConfig) -> dict[str, float]:
-    """Return ideal minimum-jerk peaks for the 5° and 10° legs."""
+    """Return ideal minimum-jerk peaks for the outbound and reversal legs."""
 
     # max |d s/dt| for 10t^3-15t^4+6t^5 is 1.875.
     # max |d²s/dt²| is 10*sqrt(3)/3 ~= 5.7735027.
@@ -198,9 +200,9 @@ def evaluate(config: ConditioningConfig) -> dict:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--transition-ms", type=int, default=2500)
+    parser.add_argument("--transition-ms", type=int, default=4000)
     parser.add_argument("--hold-ms", type=int, default=1000)
-    parser.add_argument("--amplitude-deg", type=float, default=5.0)
+    parser.add_argument("--amplitude-deg", type=float, default=8.0)
     parser.add_argument("--max-velocity-deg-s", type=float, default=8.0)
     parser.add_argument("--max-acceleration-deg-s2", type=float, default=30.0)
     parser.add_argument("--dt-ms", type=int, default=2)

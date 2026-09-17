@@ -108,9 +108,9 @@ def _conditioning_capture() -> str:
     rows = []
     for timestamp, elapsed, command, feedback in (
         (100, 0, 512, 512),
-        (2600, 2500, 529, 522),
-        (6600, 6500, 495, 502),
-        (9100, 9000, 512, 512),
+        (4100, 4000, 539, 530),
+        (10100, 10000, 485, 494),
+        (14100, 14000, 512, 512),
     ):
         command_array = ["0", "0", str(command), "0", "0"]
         position_array = ["512", "512", str(feedback), "512", "512"]
@@ -126,7 +126,7 @@ def _conditioning_capture() -> str:
             "8.0",
             "350",
         ]
-        rows.append(f"MLAB,{timestamp},5,2,{elapsed},9500," + ",".join(arrays))
+        rows.append(f"MLAB,{timestamp},5,2,{elapsed},14000," + ",".join(arrays))
     return header + "\n".join(rows) + "\n"
 
 
@@ -256,14 +256,14 @@ def main() -> int:
     conditioned_args = _build_parser().parse_args(["--joint", "2", "--precondition", "positive"])
     positive_conditioning = _conditioning_entry(conditioned_args, "positive")
     negative_conditioning = _conditioning_entry(conditioned_args, "negative")
-    assert positive_conditioning["description"] == "center -> +5 -> -5 -> center"
-    assert negative_conditioning["description"] == "center -> -5 -> +5 -> center"
-    assert positive_conditioning["duration_ms"] == 9500
+    assert positive_conditioning["description"] == "center -> +8 -> -8 -> center"
+    assert negative_conditioning["description"] == "center -> -8 -> +8 -> center"
+    assert positive_conditioning["duration_ms"] == 14000
     assert positive_conditioning["offline_profile"]["feasible"] is True
-    assert _command_for(positive_conditioning) == "mlab run 5 2 2 5 2500 0 8 30 250"
-    assert _command_for(negative_conditioning) == "mlab run 5 2 2 -5 2500 0 8 30 250"
+    assert _command_for(positive_conditioning) == "mlab run 5 2 2 8 4000 0 8 30 250"
+    assert _command_for(negative_conditioning) == "mlab run 5 2 2 -8 4000 0 8 30 250"
     conditioning_rows = [_row(index, command, feedback) for index, (command, feedback) in enumerate(
-        ((0, 100), (17, 120), (-17, 80), (0, 100))
+        ((0, 100), (27, 130), (-27, 70), (0, 100))
     )]
     conditioning_metadata = {**positive_conditioning, "run": "conditioning"}
     conditioning_summary = _conditioning_metrics(
@@ -273,14 +273,16 @@ def main() -> int:
         settled_feedback_count=100.0,
         settle_status={"parse_ok": True, "errors": []},
     )
-    assert conditioning_summary["conditioning_achieved_positive_counts"] == 20.0
-    assert conditioning_summary["conditioning_achieved_negative_counts"] == 20.0
-    assert conditioning_summary["conditioning_commanded_positive_counts"] == 17.0
-    assert conditioning_summary["conditioning_commanded_negative_counts"] == 17.0
+    assert conditioning_summary["conditioning_achieved_positive_counts"] == 30.0
+    assert conditioning_summary["conditioning_achieved_negative_counts"] == 30.0
+    assert conditioning_summary["conditioning_commanded_positive_counts"] == 27.0
+    assert conditioning_summary["conditioning_commanded_negative_counts"] == 27.0
     assert conditioning_summary["conditioning_commanded_positive_deg"] > 0.0
     assert conditioning_summary["conditioning_commanded_negative_deg"] > 0.0
     assert conditioning_summary["conditioning_commanded_endpoint_within_tolerance"]
-    assert conditioning_summary["conditioning_requested_positive_counts"] > 17.0
+    assert conditioning_summary["conditioning_requested_positive_counts"] > 27.0
+    assert conditioning_summary["conditioning_health_required_positive_counts"] == 13.5
+    assert conditioning_summary["conditioning_health_required_negative_counts"] == 13.5
     assert not _conditioning_health_reasons(conditioning_summary, conditioned_args)
     distorted_rows = [_row(index, command, feedback) for index, (command, feedback) in enumerate(
         ((0, 100), (19, 108), (-21, 77), (0, 100))
@@ -503,7 +505,7 @@ def main() -> int:
         finally:
             dynamics.time.sleep = original_sleep
         assert error is None
-        assert "mlab run 5 2 2 5 2500 0 8 30 250" in calls
+        assert "mlab run 5 2 2 8 4000 0 8 30 250" in calls
         assert not any(command.startswith("mlab run 4") for command in calls)
         persisted = json.loads((output_dir / "manifest.json").read_text(encoding="utf-8"))
         assert persisted["status"] == "conditioning_complete"

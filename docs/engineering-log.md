@@ -783,3 +783,39 @@ No human visual observation was supplied in the terminal record, so visibility,
 smoothness, sound/vibration, and return quality are left unclassified. No
 formal +3° run, retry, parameter tuning, EEPROM write, or additional physical
 motion was performed.
+
+## 2026-09-17 — Conditioning / health-motion protocol revised to ±8°
+
+The corrected ±5° conditioning command was valid offline, but it was not a
+reliable health motion on J2. Two identical corrected-profile captures emitted
++17/−18 counts; feedback reached +10/−22 counts in one and only +4/−20 counts
+in the next. The user also reported that the movement was barely visible.
+Because ±5° overlaps the positive small-signal/breakaway phenomenon we are
+trying to measure, it is retired as the standard preconditioner. The prior
+captures remain immutable evidence and are not reinterpreted or deleted.
+
+The new conditioning / health-motion candidate is evaluated offline only in
+this change (no flash and no physical motion):
+
+```text
+center -> +8° -> −8° -> center
+transition = 4000 ms; hold = 1000 ms
+max velocity = 8°/s; max acceleration = 30°/s²
+total duration = 14000 ms
+```
+
+The faithful deterministic simulator produces requested ±8.000° (±27.3067
+counts), generated command endpoints +8.000°/−8.000° (+27/−27 counts), zero
+endpoint-hold error, zero command overshoot, and exact return to center. The
+16° reversal leg has analytical peak velocity 7.5000°/s and peak acceleration
+5.7735°/s²; neither configured limit is active. The ±8° excursion remains
+inside the existing ±10° Motion Lab safety envelope.
+
+The health gate still compares feedback with the actual generated command
+endpoint, keeping requested, commanded, and achieved excursions separate. At
+the nominal ±8° request, the unchanged 50% threshold is 13.6533 counts,
+equivalent to 4.0000°. For a quantized ±27-count command endpoint it is 13.5
+counts (3.9551°). This motion is intended to break frictional history, establish
+directional preload, verify obvious bidirectional motion, and return to center
+from the negative side before a positive formal +3° test; it is not used to
+estimate small-signal capability.

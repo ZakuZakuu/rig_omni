@@ -51,18 +51,21 @@ DEFAULT_HOLD_MS = 1000
 DEFAULT_DEADBAND_MDEG = 250
 DEFAULT_POLL_PERIOD_MS = 5
 MOTION_LAB_CAPABILITY_PROTOCOL = 2
-CONDITIONING_AMPLITUDE_DEG = 5
-CONDITIONING_TRANSITION_MS = 2500
+# Conditioning is deliberately a health/preload motion, not a small-signal
+# capability probe.  The previous +/-5 degree profile overlapped the J2
+# breakaway regime and was not visually or physically repeatable.
+CONDITIONING_AMPLITUDE_DEG = 8
+CONDITIONING_TRANSITION_MS = 4000
 CONDITIONING_HOLD_MS = DEFAULT_HOLD_MS
 CONDITIONING_SETTLE_MS = 2000
 CONDITIONING_MAX_VELOCITY_DEG_S = 8
 CONDITIONING_MAX_ACCELERATION_DEG_S2 = 30
 # The health gate remains a conservative 50% of the command actually held at
-# each endpoint. The nominal 5-degree request is reported separately and is
+# each endpoint. The nominal 8-degree request is reported separately and is
 # never substituted for the command delivered by the generator.
 CONDITIONING_MIN_EXCURSION_FRACTION = 0.50
 # A generated endpoint is considered faithful when it is within roughly one
-# encoder count of the requested 5-degree reference. Outside this bound the
+# encoder count of the requested 8-degree reference. Outside this bound the
 # run is still preserved as evidence, but cannot be a clean conditioning gate.
 CONDITIONING_COMMAND_ENDPOINT_TOLERANCE_COUNTS = 1.5
 CONDITIONING_RETURN_TOLERANCE_COUNTS = 5.0
@@ -721,7 +724,7 @@ def _direction_asymmetry(metrics: list[dict]) -> list[dict]:
 
 
 def _conditioning_entry(args: argparse.Namespace, direction: str) -> dict:
-    """Build the optional directional center-preconditioning motion."""
+    """Build the optional directional conditioning / health motion."""
 
     if direction not in ("positive", "negative"):
         raise ValueError("conditioning direction must be positive or negative")
@@ -748,9 +751,9 @@ def _conditioning_entry(args: argparse.Namespace, direction: str) -> dict:
         "deadband_mdeg": args.deadband_mdeg,
         "direction": direction,
         "description": (
-            "center -> +5 -> -5 -> center"
+            f"center -> +{CONDITIONING_AMPLITUDE_DEG:g} -> -{CONDITIONING_AMPLITUDE_DEG:g} -> center"
             if direction == "positive"
-            else "center -> -5 -> +5 -> center"
+            else f"center -> -{CONDITIONING_AMPLITUDE_DEG:g} -> +{CONDITIONING_AMPLITUDE_DEG:g} -> center"
         ),
         "offline_profile": {
             "feasible": offline_profile["feasible"],
@@ -884,6 +887,12 @@ def _conditioning_metrics(
         "conditioning_min_excursion_fraction": CONDITIONING_MIN_EXCURSION_FRACTION,
         "conditioning_health_required_positive_counts": commanded_positive_counts * CONDITIONING_MIN_EXCURSION_FRACTION,
         "conditioning_health_required_negative_counts": commanded_negative_counts * CONDITIONING_MIN_EXCURSION_FRACTION,
+        "conditioning_health_required_positive_deg": (
+            commanded_positive_counts * CONDITIONING_MIN_EXCURSION_FRACTION * DEG_PER_COUNT
+        ),
+        "conditioning_health_required_negative_deg": (
+            commanded_negative_counts * CONDITIONING_MIN_EXCURSION_FRACTION * DEG_PER_COUNT
+        ),
         "conditioning_return_feedback_count": settled_feedback_count,
         "conditioning_return_error_counts": return_error_counts,
         "conditioning_return_error_deg": (
@@ -1649,7 +1658,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--precondition",
         choices=("positive", "negative"),
         help=(
-            "optionally run a directional center -> +/-5 -> -/+5 -> center "
+            "optionally run a directional center -> +/-8 -> -/+8 -> center "
             "health motion before formal measurements; disabled by default"
         ),
     )

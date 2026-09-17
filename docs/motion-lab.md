@@ -203,10 +203,14 @@ after reviewing the previous capture; the plan itself remains deterministic
 and begins with the gentle J2 `+3°` condition before low-speed, reversal, or
 faster tiers.
 
-The conditioning prelude uses the feasible reversal profile
-`mlab run 5 2 <joint> 5 2500 0 8 30 250` (total 9.5 s), preserving
-`center -> +5° -> -5° -> center` without velocity/acceleration distortion.
-The first formal movement remains a small J2 `+3` degree endpoint using
+The conditioning / health-motion prelude uses the feasible reversal profile
+`mlab run 5 2 <joint> 8 4000 0 8 30 250` (total 14 s), preserving
+`center -> +8° -> -8° -> center` without velocity/acceleration distortion.
+The ±8° amplitude is intentionally inside the existing ±10° diagnostic
+envelope but is large enough to establish bidirectional motion and a known
+preload state. The retired ±5° motion was command-faithful yet overlapped the
+J2 positive-direction breakaway regime and was too subtle to observe reliably;
+it is retained only as historical evidence. The first formal movement remains a small J2 `+3` degree endpoint using
 `mlab run 4 2 2 3 3000 0 8 30 250`, followed by a one-second hold and a
 return. Before it, the harness requires parseable status for IDs 1–5, a
 completed read-only `mlab params` snapshot, and an acknowledged voltage reply.

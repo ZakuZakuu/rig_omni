@@ -232,37 +232,50 @@ un-calibrated diagnostic estimate and must not be used as an actuator velocity
 limit. Raw `fb_speed_raw` values are preserved separately until the installed
 servo encoding is verified.
 
-## Cold and conditioned small-signal protocols
+## Cold small-signal and conditioning / health-motion protocols
 
 The first r1/r2 J2 +3-degree captures are retained as **cold / unconditioned**
 evidence: the mechanical state before each run was not standardized. They must
 not be discarded or reinterpreted as a repeatability result.
 
-The characterization harness has an optional, disabled-by-default conditioning
-prelude. Enable it explicitly for a future formal run with
-`--precondition positive` (or `negative`). The positive protocol sends:
+The characterization harness has an optional, disabled-by-default conditioning /
+health-motion prelude. Enable it explicitly for a future formal run with
+`--precondition positive` (or `negative`). Its purpose is to break static /
+frictional history, establish a repeatable directional preload, verify obvious
+bidirectional actuator motion, and return to center from a known direction. It
+is not itself a small-signal capability measurement.
+
+The retired ±5° protocol was command-faithful offline, but it overlapped the
+positive-direction breakaway regime on the real J2. Two corrected-profile
+captures emitted +17/−18 counts; feedback reached +10/−22 counts in one and
++4/−20 counts in the next. The user also reported that the motion was barely
+visible. Because command generation was valid but physical response was not
+repeatable, ±5° is no longer the standard conditioning motion.
+
+The standard positive health-motion protocol now sends:
 
 ```text
-mlab run 5 2 <joint> 5 2500 0 8 30 250
+mlab run 5 2 <joint> 8 4000 0 8 30 250
 ```
 
-which is the existing minimum-jerk reversal sweep:
-`center -> +5° -> -5° -> center`. The mirrored negative protocol uses `-5°`
-and follows `center -> -5° -> +5° -> center`. The selected 2,500 ms transition
-is intentional: with the existing 8°/s and 30°/s² caps, the ideal reversal
-peak is 7.5°/s and 9.24°/s², so the command generator does not distort either
-endpoint. Total conditioning time is 9,500 ms, followed by a quiet 2-second
-settle interval and a separate read-only `mlab status` snapshot before any
-formal measurement. The conditioning excursion is inside the existing ±10°
-Motion Lab envelope; it does not change compensation or persistent servo
-parameters.
+This is a minimum-jerk reversal sweep `center -> +8° -> -8° -> center`. The
+mirrored negative protocol uses `-8°` and follows
+`center -> -8° -> +8° -> center`. With a 4,000 ms transition, the 16° reversal
+leg has an analytical peak velocity of 7.50°/s and peak acceleration of
+5.7735°/s², both below the existing 8°/s and 30°/s² caps. Total conditioning
+time is 14,000 ms, followed by a quiet 2-second settle interval and a separate
+read-only `mlab status` snapshot before any formal measurement. The ±8° motion
+remains inside the existing ±10° Motion Lab envelope and does not change
+compensation or persistent servo parameters.
 
 Before supervised hardware use, run the deterministic offline feasibility check
 (no serial port is opened):
 
 ```bash
-python3 tools/motion_lab/conditioning_trajectory.py --transition-ms 1000
-python3 tools/motion_lab/conditioning_trajectory.py --transition-ms 2500
+python3 tools/motion_lab/conditioning_trajectory.py \
+  --amplitude-deg 5 --transition-ms 1000
+python3 tools/motion_lab/conditioning_trajectory.py \
+  --amplitude-deg 8 --transition-ms 4000
 ```
 
 The first command is expected to report `DISTORTED`; the selected profile must
@@ -270,14 +283,13 @@ report `FEASIBLE`. It reports nominal/requested endpoints, generated command
 endpoints, peak command velocity/acceleration, endpoint-hold error, and
 overshoot in degrees and encoder counts.
 
-The deterministic comparison is recorded here for traceability: at 1,000 ms
-the simulated command reaches approximately +5.689°/−6.049° (about +19/−20
-counts), with velocity and acceleration caps active, endpoint-hold errors of
-about 2.35/10.85 counts, and negative overshoot of about 3.58 counts. At the
-selected 2,500 ms transition it reaches +5.000°/−5.000° (+17/−17 counts),
-with 0-count hold error/overshoot and analytical peaks of 7.50°/s and
-9.24°/s². These are command-reference diagnostics, not hardware capability
-claims.
+The deterministic comparison is recorded here for traceability: the retired
+1,000 ms / ±5° profile reaches approximately +5.689°/−6.049° (about +19/−20
+counts), with velocity and acceleration caps active. The selected 4,000 ms /
+±8° profile reaches +8.000°/−8.000° (+27/−27 counts), with 0-count
+endpoint-hold error and 0-count command overshoot. Its simulated peak velocity
+is 7.5000°/s and peak acceleration is 5.7735°/s²; neither limit is active.
+These are command-reference diagnostics, not hardware capability claims.
 
 The harness remains dry-run by default. A future supervised positive run would
 opt in explicitly, for example:
@@ -316,7 +328,10 @@ error or stale flag, voltage within the existing observational ~8 V review
 band, raw load below the provisional anomaly gate, and return within five
 encoder counts of the preconditioning center. The gate compares feedback with
 the command endpoint actually generated and held (50% minimum), while also
-recording the nominal requested ±5° endpoint. If the command endpoint itself
+recording the nominal requested ±8° endpoint. For a nominal ±8° request this
+is 27.3067 counts and the current 50% gate requires at least 13.6533 counts,
+equivalent to 4.0000°. For a quantized ±27-count generated endpoint, the gate
+is 13.5 counts (3.9551°). If the command endpoint itself
 differs from the request by more than roughly 1.5 counts, the result is marked
 an experimental-design distortion and is not a clean breakaway conclusion. If
 any gate fails, the formal run is not started. Reports keep `conditioning`,
@@ -326,8 +341,9 @@ any gate fails, the formal run is not started. Reports keep `conditioning`,
 Conditioning metrics report the command positions actually emitted in the
 capture (positive/negative excursion in counts and degrees), the corresponding
 feedback excursions, return error, unique feedback rate/age, peak raw load,
-and voltage range. Thus the `+5° -> -5°` reversal leg is measured rather than
-assumed to reach either nominal endpoint.
+and voltage range. Thus the `+8° -> -8°` reversal leg is measured rather than
+assumed to reach either nominal endpoint. The final approach to center is from
+the negative side before a positive formal +3° test.
 
 ### Initial cold-baseline forensic comparison
 
