@@ -651,3 +651,20 @@ have the human review the visible positive leg and decide whether to repeat the
 same conditioning once for repeatability or investigate the positive-direction
 breakaway/measurement behavior before any conditioned +3° experiment. No
 parameter tuning or compensation is justified by this single run.
+
+## 2026-09-17 — Stock idle-motion isolation check
+
+The supervised conditioning-only capture
+`backups/motion-lab-conditioning-only-2026-09-17-positive-hw1/` was run while
+the stock idle behavior was visibly enabled before the experiment. The
+firmware's direct-control branch disables idle motion as soon as it takes
+ownership and restores the previous state when the run finishes. The
+immutable UART capture confirms that this isolation held: during the 86-row
+conditioning window, J0 and J4 command positions were constant (0-count
+span), while only the selected J2 command changed. The observed J2
+under-travel therefore must not be attributed to q0/q4 idle offsets.
+
+To make the state controllable from the ESP-IDF monitor without an MCP client,
+the UART console now provides `mlab idle off|on|status`. This is a RAM-only
+switch; reboot restores the upstream default (enabled), and it does not write
+servo EEPROM or alter Motion Lab's temporary isolation/restore behavior.

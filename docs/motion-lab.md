@@ -69,11 +69,19 @@ browser connection.
 ```text
 mlab help
 mlab caps
+mlab idle off|on|status
 mlab hold
 mlab visible [joint]
 mlab run <experiment> <trajectory> <joint> <amplitude_deg> <duration_ms> <stagger_ms> <max_velocity_deg_s> <max_acceleration_deg_s2> <deadband_mdeg>
 mlab stop
 ```
+
+`mlab idle off` disables the stock q0/q4 idle micro-motion in RAM and leaves
+the arm on its normal IK pose; `mlab idle on` restores it. `mlab idle status`
+is read-only. These settings are not EEPROM parameters and currently reset to
+the upstream default (enabled) after reboot. Motion Lab itself always
+temporarily disables idle motion while a run owns the direct-joint path, then
+restores the state that was active before the run.
 
 The first controlled test is simply:
 
