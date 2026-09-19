@@ -18,8 +18,11 @@ so a complete five-joint cycle is approximately 100 ms (about 10 Hz per joint).
 The receive path records a millisecond timestamp for every valid state packet.
 Motion Lab telemetry reports both the per-joint sample timestamp and its age.
 The round-robin advances only after the matching ID's valid response is parsed.
-An unanswered request is retried three times with a 60 ms timeout, then the
-joint is marked stale and the poller advances. An explicit selected-joint
+An unanswered request is retried once (two total attempts) with a 60 ms
+timeout, then the joint is marked stale and the poller advances. This bounds a
+single missing joint to approximately 140 ms including the scheduler wake-up,
+so healthy IDs continue to receive samples inside the 250 ms freshness window.
+An explicit selected-joint
 high-rate mode (5--100 ms request period) deprioritizes the other IDs and
 reports measured response rate and gaps.
 

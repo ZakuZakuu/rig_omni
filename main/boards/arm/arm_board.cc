@@ -37,6 +37,7 @@
 #include "xgo_action.h"
 #include "idle_motion.h"
 #include "motion_lab.h"
+#include "creature_stream.h"
 #include "imu.h"
 
 #define TAG "ARM"
@@ -59,7 +60,9 @@ MotionLabConfig MotionLabDefaultConfig() {
 }
 
 MotionLabStartResult StartMotionLab(const MotionLabConfig& config) {
-    if (calibrate_mode == 1 || teach_state != TEACH_IDLE) return kMotionLabInvalidConfig;
+    if (calibrate_mode == 1 || teach_state != TEACH_IDLE || creature_stream_is_owned()) {
+        return kMotionLabInvalidConfig;
+    }
 
     int16_t feedback[MOTOR_NUM];
     int16_t zero[MOTOR_NUM];
@@ -124,6 +127,97 @@ void PrintMotionLabCapabilities() {
            "project=%s,version=%s,build_date=%s,build_time=%s,elf_sha256=%s\r\n",
            app_desc->project_name, app_desc->version, app_desc->date,
            app_desc->time, elf_sha256);
+}
+
+void PrintCreatureStreamCapabilities() {
+    const esp_app_desc_t* app_desc = esp_app_get_description();
+    char elf_sha256[sizeof(app_desc->app_elf_sha256) * 2 + 1] = {};
+    if (app_desc != nullptr) {
+        for (size_t i = 0; i < sizeof(app_desc->app_elf_sha256); ++i) {
+            snprintf(elf_sha256 + i * 2, sizeof(elf_sha256) - i * 2, "%02x",
+                     app_desc->app_elf_sha256[i]);
+        }
+    }
+    printf("CREATURE_CAPS,protocol=%d,joints=%d,units=mdeg,max_stream_hz=%d,watchdog_ms=%d,"
+           "project=%s,version=%s,elf_sha256=%s\r\n",
+           CREATURE_STREAM_PROTOCOL, CREATURE_STREAM_JOINTS, CREATURE_STREAM_MAX_HZ,
+           CREATURE_STREAM_WATCHDOG_MS,
+           app_desc != nullptr ? app_desc->project_name : "rig-arm",
+           app_desc != nullptr ? app_desc->version : "unknown",
+           app_desc != nullptr ? elf_sha256 : "unavailable");
+}
+
+void PrintCreatureStreamHelp() {
+    printf("CREATURE_CONSOLE commands:\r\n"
+           "  creature caps\r\n"
+           "  creature take\r\n"
+           "  creature target <seq> <q0_mdeg> <q1_mdeg> <q2_mdeg> <q3_mdeg> <q4_mdeg>\r\n"
+           "  creature state\r\n"
+           "  creature stop\r\n"
+           "  creature release\r\n"
+           "  creature help\r\n");
+}
+
+void PrintCreatureStreamState(uint64_t now_us) {
+    CreatureStreamSnapshot snapshot = {};
+    creature_stream_get_snapshot(&snapshot, now_us);
+    // Keep the internal microsecond timestamp 64-bit for safety calculations,
+    // but print a uint32 millisecond projection: ESP-IDF Nano printf does not
+    // implement the 64-bit integer formatters. Wraparound is acceptable for
+    // this diagnostic field; age calculations remain uint64-based internally.
+    const uint32_t last_target_ms =
+        static_cast<uint32_t>(snapshot.last_target_us / 1000ULL);
+    printf("CREATURE_STATE,owner=%s,holding=%d,timed_out=%d,seq_valid=%d,last_seq=%lu,"
+           "target_age_ms=%lu,last_target_ms=%lu,target_mdeg=%ld|%ld|%ld|%ld|%ld,"
+           "target_pos=%d|%d|%d|%d|%d,fb_pos=%d|%d|%d|%d|%d,"
+           "fb_mdeg=%ld|%ld|%ld|%ld|%ld,fb_age_ms=%lu|%lu|%lu|%lu|%lu,fb_stale=%d|%d|%d|%d|%d,"
+           "servo_error=%d|%d|%d|%d|%d,voltage_v=%.2f\r\n",
+           snapshot.owned ? (snapshot.fault_hold ? "fault_hold" :
+                              (snapshot.timed_out ? "timed_out" :
+                               (snapshot.holding ? "hold" : "active"))) : "released",
+           snapshot.holding ? 1 : 0, snapshot.timed_out ? 1 : 0,
+           snapshot.sequence_valid ? 1 : 0,
+           static_cast<unsigned long>(snapshot.last_sequence),
+           static_cast<unsigned long>(snapshot.target_age_ms),
+           static_cast<unsigned long>(last_target_ms),
+           static_cast<long>(snapshot.target_mdeg[0]), static_cast<long>(snapshot.target_mdeg[1]),
+           static_cast<long>(snapshot.target_mdeg[2]), static_cast<long>(snapshot.target_mdeg[3]),
+           static_cast<long>(snapshot.target_mdeg[4]),
+           snapshot.target_pos[0], snapshot.target_pos[1], snapshot.target_pos[2],
+           snapshot.target_pos[3], snapshot.target_pos[4],
+           snapshot.feedback_pos[0], snapshot.feedback_pos[1], snapshot.feedback_pos[2],
+           snapshot.feedback_pos[3], snapshot.feedback_pos[4],
+           static_cast<long>(snapshot.feedback_mdeg[0]), static_cast<long>(snapshot.feedback_mdeg[1]),
+           static_cast<long>(snapshot.feedback_mdeg[2]), static_cast<long>(snapshot.feedback_mdeg[3]),
+           static_cast<long>(snapshot.feedback_mdeg[4]),
+           static_cast<unsigned long>(snapshot.feedback_age_ms[0]),
+           static_cast<unsigned long>(snapshot.feedback_age_ms[1]),
+           static_cast<unsigned long>(snapshot.feedback_age_ms[2]),
+           static_cast<unsigned long>(snapshot.feedback_age_ms[3]),
+           static_cast<unsigned long>(snapshot.feedback_age_ms[4]),
+           snapshot.feedback_stale[0] ? 1 : 0, snapshot.feedback_stale[1] ? 1 : 0,
+           snapshot.feedback_stale[2] ? 1 : 0, snapshot.feedback_stale[3] ? 1 : 0,
+           snapshot.feedback_stale[4] ? 1 : 0, snapshot.servo_error[0], snapshot.servo_error[1],
+           snapshot.servo_error[2], snapshot.servo_error[3], snapshot.servo_error[4], snapshot.voltage_v);
+}
+
+void PrintCreatureStreamAck(const char* command, CreatureStreamResult result,
+                            uint64_t now_us) {
+    CreatureStreamSnapshot snapshot = {};
+    creature_stream_get_snapshot(&snapshot, now_us);
+    printf("CREATURE_ACK,command=%s,result=%s,owner=%s,seq_valid=%d,last_seq=%lu,"
+           "target_age_ms=%lu,target_mdeg=%ld|%ld|%ld|%ld|%ld,feedback_fresh=%d\r\n",
+           command, creature_stream_result_string(result),
+           snapshot.owned ? (snapshot.fault_hold ? "fault_hold" :
+                              (snapshot.timed_out ? "timed_out" :
+                               (snapshot.holding ? "hold" : "active"))) : "released",
+           snapshot.sequence_valid ? 1 : 0,
+           static_cast<unsigned long>(snapshot.last_sequence),
+           static_cast<unsigned long>(snapshot.target_age_ms),
+           static_cast<long>(snapshot.target_mdeg[0]), static_cast<long>(snapshot.target_mdeg[1]),
+           static_cast<long>(snapshot.target_mdeg[2]), static_cast<long>(snapshot.target_mdeg[3]),
+           static_cast<long>(snapshot.target_mdeg[4]),
+           creature_stream_feedback_is_healthy(now_us) ? 1 : 0);
 }
 
 }  // namespace
@@ -352,7 +446,8 @@ private:
             
             if (button_press_start_time_ > 0) {
                 int64_t press_duration = (esp_timer_get_time() / 1000) - button_press_start_time_;
-                ESP_LOGI(TAG, "Button released, press duration: %lld ms", (long long)press_duration);
+                ESP_LOGI(TAG, "Button released, press duration: %ld ms",
+                         static_cast<long>(press_duration));
                 
                 if (press_duration >= kLongPressResetMs) {
                     ESP_LOGW(TAG, "Long press detected (>3s), resetting NVS...");
@@ -432,7 +527,8 @@ private:
             esp_timer_stop(touch_long_press_timer_);
             if (touch_press_start_time_ > 0) {
                 int64_t press_duration = (esp_timer_get_time() / 1000) - touch_press_start_time_;
-                ESP_LOGI(TAG, "Touch released, duration: %lld ms", (long long)press_duration);
+                ESP_LOGI(TAG, "Touch released, duration: %ld ms",
+                         static_cast<long>(press_duration));
                 if (press_duration >= kTouchLongPressResetMs) {
                     ESP_LOGW(TAG, "Touch long press (>8s), clearing NVS + calibration and restarting...");
                     auto& app = Application::GetInstance();
@@ -492,6 +588,10 @@ private:
     }
 
     void Calibrate(int mode) {
+        if (creature_stream_is_owned()) {
+            ESP_LOGW(TAG, "Calibration request refused while Creature Stream owns the joints");
+            return;
+        }
         short mid_pos[] = {M_N/2, M_N/2, M_N/2, M_N/2, M_N/2};
         if(mode==1 && calibrate_mode==0){
             //printf("Enter calibration mode\n");
@@ -1034,6 +1134,7 @@ public:
         imu_init();
         rig_arm_ik_init(&arm_ik, 0.05);
         idle_motion_init();
+        creature_stream_init();
         // XGO 控制任务
         xTaskCreatePinnedToCore([](void* arg) {
             (void)arg;
@@ -1052,7 +1153,7 @@ public:
                 // Characterization mode shortens the parser cadence together
                 // with the selected-joint poller; normal firmware remains at
                 // the stock 20 ms feedback task period.
-                vTaskDelay(pdMS_TO_TICKS(xgo_feedback_poll_interval_ms()));
+                vTaskDelay(pdMS_TO_TICKS(xgo_feedback_rx_interval_ms()));
             }
             vTaskDelete(NULL);
         }, "xgo_rx_task", 4096, this, 5, &xgo_rx_task_handle_, 1);
@@ -1076,26 +1177,69 @@ public:
             bool header_emitted = false;
             while (true) {
                 MotionLabStatus status = {};
-                const uint32_t now_us = static_cast<uint32_t>(esp_timer_get_time());
-                const uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
-                motion_lab_get_status(&status, now_us);
+                const uint64_t now_us = static_cast<uint64_t>(esp_timer_get_time());
+                const uint32_t now_ms = static_cast<uint32_t>(now_us / 1000ULL);
+                CreatureStreamFaultSnapshot fault = {};
+                if (creature_stream_take_fault_snapshot(&fault)) {
+                    printf("CREATURE_FAULT,reason=feedback_unhealthy,ts_ms=%lu,last_seq=%lu,poll_id=%u,poll_pending=%d,poll_attempts=%u,fb_pos=%d|%d|%d|%d|%d,fb_age_ms=%lu|%lu|%lu|%lu|%lu,fb_stale=%d|%d|%d|%d|%d,servo_error=%d|%d|%d|%d|%d,poll_skips=%lu|%lu|%lu|%lu|%lu,poll_req=%lu|%lu|%lu|%lu|%lu,poll_valid=%lu|%lu|%lu|%lu|%lu,poll_timeout=%lu|%lu|%lu|%lu|%lu,checksum_invalid=%lu,malformed=%lu,unexpected_id=%lu,bus_overlap=%lu,deferred_cmd=%lu,bus_pending_id=%u,bus_pending_age_ms=%lu,bus_overlap_last_seq=%lu\r\n",
+                           static_cast<unsigned long>(fault.timestamp_ms),
+                           static_cast<unsigned long>(fault.last_sequence),
+                           static_cast<unsigned>(fault.poll_id), fault.poll_pending ? 1 : 0,
+                           static_cast<unsigned>(fault.poll_attempts),
+                           fault.feedback_pos[0], fault.feedback_pos[1], fault.feedback_pos[2],
+                           fault.feedback_pos[3], fault.feedback_pos[4],
+                           static_cast<unsigned long>(fault.feedback_age_ms[0]),
+                           static_cast<unsigned long>(fault.feedback_age_ms[1]),
+                           static_cast<unsigned long>(fault.feedback_age_ms[2]),
+                           static_cast<unsigned long>(fault.feedback_age_ms[3]),
+                           static_cast<unsigned long>(fault.feedback_age_ms[4]),
+                           fault.feedback_stale[0] ? 1 : 0, fault.feedback_stale[1] ? 1 : 0,
+                           fault.feedback_stale[2] ? 1 : 0, fault.feedback_stale[3] ? 1 : 0,
+                           fault.feedback_stale[4] ? 1 : 0,
+                           fault.servo_error[0], fault.servo_error[1], fault.servo_error[2],
+                           fault.servo_error[3], fault.servo_error[4],
+                           static_cast<unsigned long>(fault.poll_skip_count[0]),
+                           static_cast<unsigned long>(fault.poll_skip_count[1]),
+                           static_cast<unsigned long>(fault.poll_skip_count[2]),
+                           static_cast<unsigned long>(fault.poll_skip_count[3]),
+                           static_cast<unsigned long>(fault.poll_skip_count[4]),
+                           static_cast<unsigned long>(fault.poll_request_count[0]),
+                           static_cast<unsigned long>(fault.poll_request_count[1]),
+                           static_cast<unsigned long>(fault.poll_request_count[2]),
+                           static_cast<unsigned long>(fault.poll_request_count[3]),
+                           static_cast<unsigned long>(fault.poll_request_count[4]),
+                           static_cast<unsigned long>(fault.poll_valid_response_count[0]),
+                           static_cast<unsigned long>(fault.poll_valid_response_count[1]),
+                           static_cast<unsigned long>(fault.poll_valid_response_count[2]),
+                           static_cast<unsigned long>(fault.poll_valid_response_count[3]),
+                           static_cast<unsigned long>(fault.poll_valid_response_count[4]),
+                           static_cast<unsigned long>(fault.poll_timeout_count[0]),
+                           static_cast<unsigned long>(fault.poll_timeout_count[1]),
+                           static_cast<unsigned long>(fault.poll_timeout_count[2]),
+                           static_cast<unsigned long>(fault.poll_timeout_count[3]),
+                           static_cast<unsigned long>(fault.poll_timeout_count[4]),
+                           static_cast<unsigned long>(fault.checksum_invalid_count),
+                           static_cast<unsigned long>(fault.malformed_packet_count),
+                           static_cast<unsigned long>(fault.unexpected_response_count),
+                           static_cast<unsigned long>(fault.bus_overlap_count),
+                           static_cast<unsigned long>(fault.deferred_command_count),
+                           static_cast<unsigned>(fault.bus_overlap_pending_id),
+                           static_cast<unsigned long>(fault.bus_overlap_pending_age_ms),
+                           static_cast<unsigned long>(fault.bus_overlap_last_sequence));
+                }
+                motion_lab_get_status(&status, static_cast<uint32_t>(now_us));
                 if (status.active) {
                     short command_pos[MOTOR_NUM];
-                    uint32_t feedback_ts_ms[MOTOR_NUM];
+                    uint64_t feedback_ts_us[MOTOR_NUM];
                     uint32_t feedback_age_ms[MOTOR_NUM];
                     for (int i = 0; i < MOTOR_NUM; ++i) {
                         command_pos[i] = static_cast<short>(motor[i].ZeroPos +
                             status.command_deg[i] / M_A * M_N);
-                        feedback_ts_ms[i] = motor[i].FbTimestampMs;
-                        if (feedback_ts_ms[i] == 0) {
+                        feedback_ts_us[i] = motor[i].FbTimestampUs;
+                        if (feedback_ts_us[i] == 0 || now_us < feedback_ts_us[i]) {
                             feedback_age_ms[i] = UINT32_MAX;
-                        } else if (feedback_ts_ms[i] > now_ms) {
-                            // The RX task can update the timestamp between the
-                            // now_ms sample and this snapshot. Do not expose an
-                            // unsigned wraparound as a multi-billion-ms age.
-                            feedback_age_ms[i] = 0;
                         } else {
-                            feedback_age_ms[i] = now_ms - feedback_ts_ms[i];
+                            feedback_age_ms[i] = static_cast<uint32_t>((now_us - feedback_ts_us[i]) / 1000ULL);
                         }
                     }
                     if (!header_emitted) {
@@ -1114,11 +1258,11 @@ public:
                            motor[0].FbPos, motor[1].FbPos, motor[2].FbPos, motor[3].FbPos, motor[4].FbPos,
                            motor[0].FbSpd, motor[1].FbSpd, motor[2].FbSpd, motor[3].FbSpd, motor[4].FbSpd,
                            motor[0].FbTor, motor[1].FbTor, motor[2].FbTor, motor[3].FbTor, motor[4].FbTor,
-                           static_cast<unsigned long>(feedback_ts_ms[0]),
-                           static_cast<unsigned long>(feedback_ts_ms[1]),
-                           static_cast<unsigned long>(feedback_ts_ms[2]),
-                           static_cast<unsigned long>(feedback_ts_ms[3]),
-                           static_cast<unsigned long>(feedback_ts_ms[4]),
+                           static_cast<unsigned long>(feedback_ts_us[0] / 1000ULL),
+                           static_cast<unsigned long>(feedback_ts_us[1] / 1000ULL),
+                           static_cast<unsigned long>(feedback_ts_us[2] / 1000ULL),
+                           static_cast<unsigned long>(feedback_ts_us[3] / 1000ULL),
+                           static_cast<unsigned long>(feedback_ts_us[4] / 1000ULL),
                            static_cast<unsigned long>(feedback_age_ms[0]),
                            static_cast<unsigned long>(feedback_age_ms[1]),
                            static_cast<unsigned long>(feedback_age_ms[2]),
@@ -1163,6 +1307,42 @@ public:
                 line[line_length] = '\0';
                 line_length = 0;
 
+                const uint64_t now_us = static_cast<uint64_t>(esp_timer_get_time());
+                if (strcmp(line, "creature help") == 0) {
+                    PrintCreatureStreamHelp();
+                    continue;
+                }
+                if (strcmp(line, "creature caps") == 0) {
+                    PrintCreatureStreamCapabilities();
+                    continue;
+                }
+                if (strcmp(line, "creature state") == 0) {
+                    PrintCreatureStreamState(now_us);
+                    continue;
+                }
+                if (strcmp(line, "creature take") == 0) {
+                    PrintCreatureStreamAck("take", creature_stream_take(now_us), now_us);
+                    continue;
+                }
+                if (strcmp(line, "creature stop") == 0) {
+                    PrintCreatureStreamAck("stop", creature_stream_stop(now_us), now_us);
+                    continue;
+                }
+                if (strcmp(line, "creature release") == 0) {
+                    PrintCreatureStreamAck("release", creature_stream_release(), now_us);
+                    continue;
+                }
+                if (strncmp(line, "creature target", strlen("creature target")) == 0) {
+                    uint32_t sequence = 0;
+                    int32_t target_mdeg[CREATURE_STREAM_JOINTS] = {};
+                    const bool parsed = creature_stream_parse_target(line, &sequence, target_mdeg);
+                    const CreatureStreamResult result = parsed
+                        ? creature_stream_accept_target(sequence, target_mdeg, now_us)
+                        : kCreatureStreamMalformed;
+                    PrintCreatureStreamAck("target", result, now_us);
+                    continue;
+                }
+
                 if (strcmp(line, "mlab help") == 0) {
                     PrintMotionLabConsoleHelp();
                     continue;
@@ -1174,7 +1354,9 @@ public:
                 if (strcmp(line, "mlab idle off") == 0 ||
                     strcmp(line, "mlab idle on") == 0 ||
                     strcmp(line, "mlab idle status") == 0) {
-                    if (motion_lab_is_active()) {
+                    if (creature_stream_is_owned() && strcmp(line, "mlab idle status") != 0) {
+                        printf("MLAB_IDLE busy; release Creature Stream before changing idle motion\r\n");
+                    } else if (motion_lab_is_active()) {
                         printf("MLAB_IDLE busy; stop Motion Lab before changing idle motion\r\n");
                     } else if (strcmp(line, "mlab idle status") == 0) {
                         printf("MLAB_IDLE enabled=%d\r\n", idle_motion_is_enabled() ? 1 : 0);

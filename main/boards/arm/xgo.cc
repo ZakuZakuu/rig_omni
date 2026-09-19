@@ -16,9 +16,11 @@
 #include "xgo_action.h"
 #include "idle_motion.h"
 #include "motion_lab.h"
+#include "creature_stream.h"
 #include "application.h"
 #include "board.h"
 #include "display.h"
+#include "feedback_poll_scheduler.h"
 
 static const char* TAG = "XGO";
 
@@ -29,6 +31,9 @@ uint16_t motor_speed = 350;
 uint8_t Action_ID = 0;
 uint8_t actionLoop_FLAG = 0;
 uint8_t serial_lock = 0;
+
+static void record_feedback_bus_overlap();
+static bool feedback_response_window_should_defer_command();
 
 int calibrate_mode = 0;
 int init_flag = 0;
@@ -162,7 +167,7 @@ void InitZeroPos(){
     for(int i=0;i<MOTOR_NUM;i++){
         motor[i].ID = i+1;
         motor[i].Load = 0;
-		motor[i].FbTimestampMs = 0;
+		motor[i].FbTimestampUs = 0;
 		motor[i].FbSequence = 0;
 		motor[i].FbStale = true;
     }
@@ -202,6 +207,9 @@ bool SendMotorCommand(uint8_t *pData,uint16_t size)
 }
 
 void SetMotorPos(short pos[], short vel) {
+    if (feedback_response_window_should_defer_command()) {
+        return;
+    }
     const int l_a = MOTOR_NUM;
     const uint8_t inst_length = (uint8_t)((6 + 1) * l_a + 4);
     uint8_t data_buf[5 + 7 * MOTOR_NUM];
@@ -236,6 +244,7 @@ void SetMotorPos(short pos[], short vel) {
         packet[2 + i] = data_buf[i];
     }
     packet[2 + idx] = (uint8_t)(255 - (check_sum & 0xFF));
+    record_feedback_bus_overlap();
     SendMotorCommand(packet, 3 + idx);
 }
 
@@ -406,6 +415,17 @@ static volatile bool feedback_poll_waiting = false;
 static volatile uint32_t feedback_poll_sent_ms = 0;
 static volatile uint8_t feedback_poll_attempts = 0;
 static volatile uint32_t feedback_poll_skip_count[MOTOR_NUM] = {};
+static volatile uint32_t feedback_request_count[MOTOR_NUM] = {};
+static volatile uint32_t feedback_valid_response_count[MOTOR_NUM] = {};
+static volatile uint32_t feedback_timeout_count[MOTOR_NUM] = {};
+static volatile uint32_t feedback_checksum_invalid_count = 0;
+static volatile uint32_t feedback_malformed_packet_count = 0;
+static volatile uint32_t feedback_unexpected_response_count = 0;
+static volatile uint32_t feedback_bus_overlap_count = 0;
+static volatile uint32_t feedback_deferred_command_count = 0;
+static volatile uint8_t feedback_bus_overlap_pending_id = 0;
+static volatile uint32_t feedback_bus_overlap_pending_age_ms = 0;
+static volatile uint32_t feedback_bus_overlap_last_sequence = 0;
 static volatile bool feedback_high_rate_enabled = false;
 static volatile uint8_t feedback_high_rate_joint = 0;
 static volatile uint32_t feedback_high_rate_period_ms = 20;
@@ -420,13 +440,12 @@ static volatile uint32_t feedback_voltage_next_ms = 0;
 
 namespace {
 
-constexpr uint32_t kFeedbackRequestTimeoutMs = 60;
-constexpr uint8_t kFeedbackMaxAttempts = 3;
+constexpr uint32_t kFeedbackRequestTimeoutMs = rig_arm_feedback::kRequestTimeoutMs;
 constexpr uint32_t kFeedbackHighRateTaskIntervalMs = 5;
 constexpr uint32_t kFeedbackBackgroundPeriodMs = 100;
 
 uint8_t next_feedback_id(uint8_t current) {
-    return current >= MOTOR_NUM ? 1 : static_cast<uint8_t>(current + 1);
+    return rig_arm_feedback::next_id(current);
 }
 
 void reset_feedback_request() {
@@ -448,8 +467,34 @@ bool is_high_rate_id(uint8_t id) {
 
 }  // namespace
 
+static void record_feedback_bus_overlap() {
+    if (!feedback_poll_waiting) return;
+    const uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
+    feedback_bus_overlap_count = feedback_bus_overlap_count + 1;
+    feedback_bus_overlap_pending_id = feedback_poll_id;
+    feedback_bus_overlap_pending_age_ms = now_ms - feedback_poll_sent_ms;
+    if (creature_stream_is_owned()) {
+        CreatureStreamSnapshot stream = {};
+        creature_stream_get_snapshot(&stream, static_cast<uint64_t>(now_ms) * 1000ULL);
+        feedback_bus_overlap_last_sequence = stream.last_sequence;
+    } else {
+        feedback_bus_overlap_last_sequence = 0;
+    }
+}
+
+static bool feedback_response_window_should_defer_command() {
+    if (!feedback_poll_waiting) return false;
+    // The servo bus is half-duplex: once a status request is outstanding,
+    // sending a broadcast position packet can corrupt either transaction.
+    // Keep the command deferred for the entire bounded request/retry window.
+    // SetMotorPos() returns immediately, so this does not block the 2 ms task;
+    // the next due command is sent after the poller clears the pending flag.
+    feedback_deferred_command_count = feedback_deferred_command_count + 1;
+    return true;
+}
+
 bool xgo_tune_apply(XgoTuneParameter parameter, uint16_t raw_value) {
-    if (motion_lab_is_active() || teach_state != TEACH_IDLE ||
+    if (creature_stream_is_owned() || motion_lab_is_active() || teach_state != TEACH_IDLE ||
         parameter < XGO_TUNE_DEADBAND || parameter > XGO_TUNE_STARTUP_FORCE) {
         return false;
     }
@@ -469,7 +514,7 @@ bool xgo_tune_apply(XgoTuneParameter parameter, uint16_t raw_value) {
 }
 
 bool xgo_tune_restore_factory() {
-    if (motion_lab_is_active() || teach_state != TEACH_IDLE) return false;
+    if (creature_stream_is_owned() || motion_lab_is_active() || teach_state != TEACH_IDLE) return false;
 
     servo_parameter_dump_active = true;
     reset_feedback_request();
@@ -564,7 +609,7 @@ static bool ReadServoParameter(uint8_t read_id, const ServoParameterSpec& spec) 
 }
 
 void xgo_dump_factory_parameters() {
-    if (motion_lab_is_active() || teach_state != TEACH_IDLE) {
+    if (creature_stream_is_owned() || motion_lab_is_active() || teach_state != TEACH_IDLE) {
         printf("SCS009_PARAM dump: refused while motion/teach is active\r\n");
         return;
     }
@@ -597,9 +642,13 @@ void xgo_dump_factory_parameters() {
 void xgo_print_servo_status() {
     printf("MLAB_SERVO_STATUS,id,error_hex,last_error_hex,last_error_ts_ms,error_count,fb_pos,fb_speed_raw,fb_load_raw,stale\r\n");
     for (int i = 0; i < MOTOR_NUM; ++i) {
+        // Keep FbLastErrorUs 64-bit internally; expose a uint32 millisecond
+        // projection because Nano printf has no 64-bit integer formatter.
+        const uint32_t last_error_ts_ms =
+            static_cast<uint32_t>(motor[i].FbLastErrorUs / 1000ULL);
         printf("MLAB_SERVO_STATUS,%d,%02X,%02X,%lu,%lu,%d,%d,%d,%d\r\n",
                i + 1, motor[i].FbError, motor[i].FbLastError,
-               static_cast<unsigned long>(motor[i].FbLastErrorMs),
+               static_cast<unsigned long>(last_error_ts_ms),
                static_cast<unsigned long>(motor[i].FbErrorCount),
                motor[i].FbPos, static_cast<int>(motor[i].FbSpd), motor[i].FbTor,
                motor[i].FbStale ? 1 : 0);
@@ -647,6 +696,7 @@ void xgo_rx(){
                         checkSum = 0;
                     }
                 else{
+                    feedback_malformed_packet_count = feedback_malformed_packet_count + 1;
                     rxFlag = 0;
                 }                    
                 break;
@@ -683,24 +733,31 @@ void xgo_rx(){
                         TOR_HIGH_Byte =  rxBuffer[rxDataLen + 2];
                         if(packet_id>0&&packet_id<=MOTOR_NUM){
                             const uint8_t motor_index = packet_id - 1;
+                            feedback_valid_response_count[motor_index] =
+                                feedback_valid_response_count[motor_index] + 1;
                             const uint8_t status_error = rxBuffer[4];
                             motor[motor_index].FbError = status_error;
                             if (status_error != 0) {
                                 motor[motor_index].FbLastError = status_error;
-                                motor[motor_index].FbLastErrorMs =
-                                    static_cast<uint32_t>(esp_timer_get_time() / 1000);
+                                motor[motor_index].FbLastErrorUs =
+                                    static_cast<uint64_t>(esp_timer_get_time());
                                 motor[motor_index].FbErrorCount++;
                             }
                             motor[motor_index].FbPos = POS_HIGH_Byte | (POS_LOW_Byte << 8);
                             motor[motor_index].FbSpd = VEL_HIGH_Byte | (VEL_LOW_Byte << 8);
                             motor[motor_index].FbTor = TOR_HIGH_Byte | (TOR_LOW_Byte << 8);
-                            motor[motor_index].FbTimestampMs =
-                                static_cast<uint32_t>(esp_timer_get_time() / 1000);
+                            motor[motor_index].FbTimestampUs =
+                                static_cast<uint64_t>(esp_timer_get_time());
                             motor[motor_index].FbSequence++;
                             motor[motor_index].FbStale = false;
+                            if (feedback_poll_waiting && packet_id != feedback_poll_id) {
+                                feedback_unexpected_response_count =
+                                    feedback_unexpected_response_count + 1;
+                            }
                             if (feedback_poll_waiting && packet_id == feedback_poll_id) {
                                 feedback_poll_waiting = false;
-                                const uint32_t response_ms = motor[motor_index].FbTimestampMs;
+                                const uint32_t response_ms =
+                                    static_cast<uint32_t>(motor[motor_index].FbTimestampUs / 1000ULL);
                                 if (is_high_rate_id(packet_id)) {
                                     if (feedback_high_first_response_ms == 0) {
                                         feedback_high_first_response_ms = response_ms;
@@ -723,9 +780,16 @@ void xgo_rx(){
                             if (teach_state != TEACH_RECORDING) {
                                 CheckMotorStall(packet_id);
                             }
+                        } else {
+                            feedback_unexpected_response_count =
+                                feedback_unexpected_response_count + 1;
                         }
-                        
-                        }	 
+                        } else {
+                            feedback_unexpected_response_count =
+                                feedback_unexpected_response_count + 1;
+                        }
+                    } else {
+                        feedback_checksum_invalid_count = feedback_checksum_invalid_count + 1;
                     }
                     checkSum = 0;
                     rxFlag = 0;                  			
@@ -752,9 +816,14 @@ void xgo_feedback_poll() {
             return;
         }
         feedback_poll_waiting = false;
-        if (feedback_poll_attempts < kFeedbackMaxAttempts) {
+        if (rig_arm_feedback::retry_allowed(feedback_poll_attempts)) {
             // Fall through and retry the same request below.
-        } else {
+        } else if (rig_arm_feedback::should_mark_stale(feedback_poll_attempts)) {
+            const uint8_t stale_index = feedback_poll_id - 1;
+            if (stale_index < MOTOR_NUM) {
+                feedback_timeout_count[stale_index] =
+                    feedback_timeout_count[stale_index] + 1;
+            }
             mark_feedback_skip(feedback_poll_id);
             if (is_high_rate_id(feedback_poll_id)) {
                 feedback_high_rate_next_ms = now_ms + feedback_high_rate_period_ms;
@@ -799,6 +868,11 @@ void xgo_feedback_poll() {
     }
 
     if (ReadMotorState(feedback_poll_id)) {
+        const uint8_t request_index = feedback_poll_id - 1;
+        if (request_index < MOTOR_NUM) {
+            feedback_request_count[request_index] =
+                feedback_request_count[request_index] + 1;
+        }
         feedback_poll_sent_ms = now_ms;
         feedback_poll_waiting = true;
         feedback_poll_attempts = feedback_poll_attempts + 1;
@@ -809,7 +883,15 @@ void xgo_feedback_poll() {
 }
 
 uint32_t xgo_feedback_poll_interval_ms() {
-    return feedback_high_rate_enabled ? kFeedbackHighRateTaskIntervalMs : 20;
+    return feedback_high_rate_enabled
+        ? kFeedbackHighRateTaskIntervalMs
+        : rig_arm_feedback::kTaskIntervalMs;
+}
+
+uint32_t xgo_feedback_rx_interval_ms() {
+    // Keep the RX parser responsive to the short servo response window. The
+    // feedback request scheduler remains at its independent 20 ms cadence.
+    return 1;
 }
 
 void xgo_feedback_poll_config(uint8_t joint_index, uint32_t period_ms) {
@@ -846,7 +928,9 @@ void xgo_feedback_poll_print_stats() {
     const uint32_t rate_mhz = span > 0
         ? static_cast<uint32_t>((static_cast<uint64_t>(feedback_high_valid_count - 1) * 1000000ULL) / span)
         : 0;
-    printf("MLAB_POLL stats: enabled=%d joint=%u period_ms=%lu valid=%lu span_ms=%lu rate_mHz=%lu max_gap_ms=%lu skips=%lu|%lu|%lu|%lu|%lu\r\n",
+    XgoFeedbackDiagnostics diagnostics = {};
+    xgo_feedback_poll_get_diagnostics(&diagnostics);
+    printf("MLAB_POLL stats: enabled=%d joint=%u period_ms=%lu valid=%lu span_ms=%lu rate_mHz=%lu max_gap_ms=%lu skips=%lu|%lu|%lu|%lu|%lu,requests=%lu|%lu|%lu|%lu|%lu,valid_by_id=%lu|%lu|%lu|%lu|%lu,timeouts=%lu|%lu|%lu|%lu|%lu,checksum_invalid=%lu,malformed=%lu,unexpected_id=%lu,bus_overlap=%lu,deferred_cmd=%lu,bus_pending_id=%u,bus_pending_age_ms=%lu,bus_overlap_last_seq=%lu\r\n",
            feedback_high_rate_enabled ? 1 : 0,
            feedback_high_rate_joint,
            static_cast<unsigned long>(feedback_high_rate_period_ms),
@@ -858,7 +942,57 @@ void xgo_feedback_poll_print_stats() {
            static_cast<unsigned long>(feedback_poll_skip_count[1]),
            static_cast<unsigned long>(feedback_poll_skip_count[2]),
            static_cast<unsigned long>(feedback_poll_skip_count[3]),
-           static_cast<unsigned long>(feedback_poll_skip_count[4]));
+           static_cast<unsigned long>(feedback_poll_skip_count[4]),
+           static_cast<unsigned long>(diagnostics.request_count[0]),
+           static_cast<unsigned long>(diagnostics.request_count[1]),
+           static_cast<unsigned long>(diagnostics.request_count[2]),
+           static_cast<unsigned long>(diagnostics.request_count[3]),
+           static_cast<unsigned long>(diagnostics.request_count[4]),
+           static_cast<unsigned long>(diagnostics.valid_response_count[0]),
+           static_cast<unsigned long>(diagnostics.valid_response_count[1]),
+           static_cast<unsigned long>(diagnostics.valid_response_count[2]),
+           static_cast<unsigned long>(diagnostics.valid_response_count[3]),
+           static_cast<unsigned long>(diagnostics.valid_response_count[4]),
+           static_cast<unsigned long>(diagnostics.timeout_count[0]),
+           static_cast<unsigned long>(diagnostics.timeout_count[1]),
+           static_cast<unsigned long>(diagnostics.timeout_count[2]),
+           static_cast<unsigned long>(diagnostics.timeout_count[3]),
+           static_cast<unsigned long>(diagnostics.timeout_count[4]),
+           static_cast<unsigned long>(diagnostics.checksum_invalid_count),
+           static_cast<unsigned long>(diagnostics.malformed_packet_count),
+           static_cast<unsigned long>(diagnostics.unexpected_response_count),
+           static_cast<unsigned long>(diagnostics.bus_overlap_count),
+           static_cast<unsigned long>(diagnostics.deferred_command_count),
+           static_cast<unsigned>(diagnostics.bus_overlap_pending_id),
+           static_cast<unsigned long>(diagnostics.bus_overlap_pending_age_ms),
+           static_cast<unsigned long>(diagnostics.bus_overlap_last_sequence));
+}
+
+void xgo_feedback_poll_get_snapshot(XgoFeedbackPollSnapshot* out) {
+    if (out == nullptr) return;
+    out->poll_id = feedback_poll_id;
+    out->request_pending = feedback_poll_waiting;
+    out->attempts = feedback_poll_attempts;
+    for (int i = 0; i < MOTOR_NUM; ++i) {
+        out->skip_count[i] = feedback_poll_skip_count[i];
+    }
+}
+
+void xgo_feedback_poll_get_diagnostics(XgoFeedbackDiagnostics* out) {
+    if (out == nullptr) return;
+    for (int i = 0; i < MOTOR_NUM; ++i) {
+        out->request_count[i] = feedback_request_count[i];
+        out->valid_response_count[i] = feedback_valid_response_count[i];
+        out->timeout_count[i] = feedback_timeout_count[i];
+    }
+    out->checksum_invalid_count = feedback_checksum_invalid_count;
+    out->malformed_packet_count = feedback_malformed_packet_count;
+    out->unexpected_response_count = feedback_unexpected_response_count;
+    out->bus_overlap_count = feedback_bus_overlap_count;
+    out->deferred_command_count = feedback_deferred_command_count;
+    out->bus_overlap_pending_id = feedback_bus_overlap_pending_id;
+    out->bus_overlap_pending_age_ms = feedback_bus_overlap_pending_age_ms;
+    out->bus_overlap_last_sequence = feedback_bus_overlap_last_sequence;
 }
 
 void detect_triple_click() {
@@ -938,6 +1072,9 @@ static const int64_t kWiggleDurUs = 1000000;       // 摆动 1s
 static const int64_t kWiggleCooldownUs = 1000000;  // 冷却 1s
 
 void touch_wiggle_trigger() {
+    if (creature_stream_is_owned()) {
+        return;
+    }
     int64_t now = esp_timer_get_time();
     if (now < wiggle_cooldown_until_us) {
         ESP_LOGI(TAG, "Touch wiggle: cooldown");
@@ -1010,6 +1147,7 @@ void arm_ik_update(){
 // ============================================================
 
 void teach_enter() {
+    if (creature_stream_is_owned()) return;
     if (teach_state != TEACH_IDLE) return;
     if (calibrate_mode == 1) return;  // 标定中不进入示教
 
@@ -1072,6 +1210,7 @@ void teach_cancel() {
 }
 
 int teach_play() {
+    if (creature_stream_is_owned()) return -1;
     if (!teach_has_recording || teach_frames == nullptr || teach_frame_count == 0) {
         ESP_LOGW(TAG, "Teach play: no recording available");
         return -1;
@@ -1105,6 +1244,25 @@ void xgo_control() {
     static uint32_t counter2 = 0;
 
     counter2++;
+
+    // Creature Stream has exclusive ownership between the parameter-dump
+    // guard above and Motion Lab. It forwards already validated joint-space
+    // targets at a bounded cadence; no IK, idle offset, or preset action may
+    // write a competing command while the stream is owned.
+    if (creature_stream_is_owned()) {
+        // Cancel any preset request that arrived through MCP while the stream
+        // owns the joints; it must not replay unexpectedly after release.
+        Action_ID = 0;
+        actionLoop_FLAG = 0;
+        const uint64_t now_us = static_cast<uint64_t>(esp_timer_get_time());
+        creature_stream_update(now_us);
+        if (creature_stream_should_send(now_us)) {
+            short stream_pos[MOTOR_NUM] = {};
+            creature_stream_get_target_pos(stream_pos);
+            SetMotorPos(stream_pos, motor_speed);
+        }
+        return;
+    }
 
     // Motion Lab has exclusive ownership of direct joint commands. It is a
     // diagnostic path: no IK, idle offsets, or preset Action_ID values may

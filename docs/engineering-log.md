@@ -928,3 +928,336 @@ direction difference by eye. No new post-run human visual description was
 available in the terminal record, so visibility, smoothness, sound/vibration,
 and subjective comparison of this run remain unclassified rather than
 inferred.
+
+## 2026-09-17 — Nano printf telemetry correction and read-only revalidation
+
+The Creature Stream firmware was rebuilt from `00b291ad98879be09c59103e07aa1dbabfc31526`
+on `feat/creature-stream-runtime` and flashed using ESP-IDF 5.5.3. Device ELF
+SHA-256:
+`3a0a8b98101024d3ea0c0d2888698812f6bb18f4982f0e832b9070adfa399c2a`.
+
+The preceding malformed `CREATURE_STATE`/`MLAB_SERVO_STATUS` lines were caused
+by `CONFIG_LIBC_NEWLIB_NANO_FORMAT=y`: Nano `printf` does not implement the
+64-bit integer formatters used for diagnostic timestamps. Internal watchdog,
+freshness, and feedback timestamps remain 64-bit. Console timestamps now use
+explicit `uint32` millisecond projections and `%lu`; the source tree has a
+regression guard against reintroducing `%ll`/`PRI*64` formatters in the ARM
+console sources.
+
+After flashing, only read-only monitor commands were sent (`mlab caps`,
+`mlab status`, `creature caps`, and `creature state`, with a repeated state
+sample). No `creature take`, target, Motion Lab command, or physical movement
+was performed. The device reported `MLAB_CAPS` protocol 2 with experiments
+`0|1|2|3|4|5` and `reversal=1`; `CREATURE_CAPS` reported five joints. The
+corrected state lines contained numeric `last_target_ms=0`, five feedback
+positions/mdeg values, `fb_stale=0|0|0|0|0`, `servo_error=0|0|0|0|0`, and
+`voltage_v=7.90`. Feedback ages remained finite (224|162|69|62|1 ms in the
+first sample and 94|74|54|12|135 ms in the repeat captured after boot settling),
+so the earlier shifted fields and `0.00 V` were formatting corruption rather
+than evidence of a new actuator or supply fault. The monitor exited cleanly
+and `/dev/ttyACM0` was free afterward.
+
+## 2026-09-18 — Creature Stream model-coordinate boundary verification
+
+Firmware commit `a55624f` on `feat/creature-stream-runtime` was built with
+ESP-IDF 5.5.3 and flashed from the top-level Stage #9 branch. Device ELF
+SHA-256:
+`71f7b83257e02193dc698851589c9546fde069f1c1d1a6ea39f763044551a342`.
+The authoritative installation mapping is now `[+1,+1,-1,+1,-1]`; the
+Creature Stream protocol and firmware IK limits use model coordinates, with
+sign conversion only at the servo boundary.
+
+Read-only state after boot reported model-space feedback
+`-12012|-47461|103711|293|65918` mdeg from raw counts
+`433|308|153|528|294`. All five feedback channels were fresh, all stale and
+servo-error flags were zero, and voltage was 8.00 V. The J2/J4 signs now match
+the model convention and all five values are inside the authoritative limits.
+
+Exactly one ownership check was performed; no active target or 28-second
+Creature Motion session was sent. `creature take` was accepted and entered
+HOLD with the captured target
+`6445|-46875|103711|-293|68848` mdeg. The immediate HOLD sample was
+`6738|-46875|104590|0|69434` mdeg, followed by
+`6738|-46582|105176|-293|69727` mdeg; stale/error flags remained zero and
+voltage was 7.90 V. The firmware take path disabled legacy idle and kept the
+target in HOLD. UART shows no post-take target discontinuity; a separate human
+visual jump assessment was not captured in the terminal record. `creature
+release` then returned `owner=released` successfully. Monitor exited cleanly
+and the port was released.
+
+## 2026-09-19 — Stage #9 supervised Creature Motion acceptance attempt
+
+The top-level checkout was verified on `feat/physical-creature-motion-v0` at
+the then-current local HEAD `d4951e6ce54d2094137039ae3d3825145fe97038`. The
+firmware submodule remained pinned to
+`ec5b2f816404551ee9936777f663c8da663f6772`; no firmware was rebuilt or
+flashed. ESP-IDF monitor read-only verification reported protocol 1, five
+joints, mdeg units, 40 Hz maximum stream rate, a 250 ms watchdog, and device
+ELF SHA-256
+`71f7b83257e02193dc698851589c9546fde069f1c1d1a6ea39f763044551a342`.
+Before the host attempt, `owner=released`, all stale/error flags were zero,
+five model-space feedback values were present, voltage was 7.20 V, and all
+Motion Lab servo error counts were zero. The supervised no-motion ownership
+check (`creature take` -> state -> `creature release`) completed without a
+visible jump; the final state was `owner=released` at 7.80 V.
+
+Exactly one host execution was then attempted with the documented 28-second
+command and a new immutable run directory:
+`artifacts/physical/20260919T112240_first-creature-motion/`. The PC backend
+opened the port but the first `creature take` was rejected by the device with
+`result=no_feedback`. No target was accepted, no active owner was entered, and
+no expressive motion was sent. The backend closed through its emergency-HOLD
+path; no release command was issued after the rejected acquisition. The human
+reported no movement, sound, cable strain, or other physical reaction.
+
+The retained manifest records `shutdown_reason=emergency_hold`,
+`exception=Creature Stream take failed: no_feedback`, zero accepted targets,
+and firmware/top-level identities above. The planned command trace contains
+934 rows but every `sent` value is `0`; no feedback trace was produced, so
+there are no stream-timing, watchdog, voltage-under-motion, or actuator
+tracking measurements from this attempt. This is a deployment/readiness
+failure at acquisition, not evidence about Creature Motion quality. No retry,
+servo-parameter change, manual q adjustment, or Stage #10 work followed it.
+
+## 2026-09-19 — Host acquisition readiness race diagnosis and no-motion check
+
+The failed host attempt above was traced to a host/firmware freshness-window
+race, not to an actuator motion command. Firmware `creature_stream_take()`
+requires every joint to have a non-stale, nonzero-timestamp feedback sample no
+older than 250 ms and no servo error. The pre-fix host queried one state and
+immediately sent `creature take`; `fb_stale=0` alone did not prove that age
+predicate.
+
+The top-level host fix was committed at
+`5c38137` on `feat/physical-creature-motion-v0`. Without changing firmware
+runtime source, the host now waits up to two seconds for two consecutive
+`owner=released` samples with finite feedback/voltage, zero stale/error flags,
+and all `fb_age_ms <= 250`. It records readiness poll count, wait duration,
+per-joint ages/stale/error values, voltage, owner, and whether the take line
+was actually sent; failure is closed without sending `take`.
+
+First, a read-only serial-open diagnostic was run after a healthy monitor
+state. Its immutable artifacts are under
+`artifacts/physical/20260919T_acquisition_open_diagnostic/` in the top-level
+repository. Opening the current pyserial transport produced no `ESP-ROM`,
+`rst:`, `Build:`, or `boot:` markers. Twelve state samples over about 1.5 s
+remained `owner=released`, with zero stale/error flags and zero servo errors;
+ages ranged up to 289 ms while legacy idle continued to change the released
+posture. Therefore a pyserial DTR/RTS reset is not supported by this check and
+was not changed blindly.
+
+With the human observing, the fixed host then ran exactly one no-motion
+acquisition check. Artifacts are under
+`artifacts/physical/20260919T_acquisition_readiness_check/`. The initial state
+ages were `339/313/293/112/61 ms`, so the gate waited three polls for two
+consecutive healthy samples (`70/49/29/9/111 ms`) in approximately 306 ms.
+`creature take` was accepted into HOLD, `creature state` remained holding, and
+`creature release` returned `owner=released`. No target or Motion Lab command
+was sent; the human observed no jump, sound, cable strain, or other physical
+reaction. This verifies the acquisition race fix only and is not a Creature
+Motion acceptance run.
+
+## 2026-09-19 — Human-visible Creature Stream ownership proof
+
+The earlier rapid `take -> state -> release` check was not a human-visible
+ownership validation: the human did not observe it, and legacy idle was
+already moving. A separate supervised check was run with the host acquisition
+margin enabled. Firmware runtime and servo parameters were unchanged.
+
+The human first confirmed visible legacy-idle sway. The host used the bounded
+two-sample readiness gate with `fb_age_ms <= 200` and observed passing ages:
+
+```text
+[67, 48, 28, 8, 88] ms
+[65, 46, 26, 1, 86] ms
+```
+
+`creature take` returned `accepted` with `owner=hold`. Six read-only state
+queries over 3.14 s all reported `owner=hold`, `holding=true`, no stale
+feedback, no servo errors, and no watchdog timeout. No target or Motion Lab
+command was sent. The human confirmed that legacy sway stopped and the robot
+held its posture during HOLD. `creature release` returned `accepted` with
+`owner=released`, and the human confirmed that legacy idle resumed.
+
+The immutable host artifact is
+`artifacts/physical/20260919T_ownership-hold-observation-r3/`. This is a
+successful ownership proof only; no Creature Motion session was run.
+
+## 2026-09-19 — Stage 9A active-stream proof blocked by current pose
+
+Under human supervision, the read-only preflight passed: protocol 1, five
+joints, device ELF SHA
+`71f7b83257e02193dc698851589c9546fde069f1c1d1a6ea39f763044551a342`, zero
+stale/error flags, and 8.0 V. `creature take` was accepted into HOLD.
+
+The Stage 9A no-op stream then failed closed before its first target. The
+measured HOLD posture was approximately
+`[10.840, -48.047, 103.418, 0.000, 81.152]` degrees; J4 exceeded the shared
+model/firmware upper limit of approximately `74.485` degrees, so the host
+`SerialHardwareBackend` rejected the target with `target exceeds simulation
+joint limits`. Accepted target count was zero and no physical target motion
+was commanded. A read-only state query while still in HOLD confirmed the
+firmware target J4 was also approximately `81.152` degrees. The session was
+left fail-closed in HOLD; no automatic release or retry was performed.
+
+This is a current-pose/safety-envelope mismatch caused by the legacy runtime,
+not evidence that the active stream transport is broken. Stage 9B was not
+started. Do not loosen limits or clamp this target without a deliberate safety
+decision.
+
+## 2026-09-19 — Feedback-fairness fix: no-motion validation still fail-closed
+
+The bounded-retry firmware (`9de5575`, ELF SHA
+`2ba905b452966b59e17ffc7027a659ff4599dbe64a1d7727a28ca5f91a6c213f`) was
+flashed and verified through ESP-IDF monitor. Read-only capabilities reported
+protocol 2, experiments `0|1|2|3|4|5`, reversal support, and the expected ELF;
+`mlab status` showed all five IDs with zero current errors/stale flags. Legacy
+idle was then disabled before the supervised stream.
+
+The required 10-second no-motion active-stream check held the acquired posture
+constant at `[0, -47.754, 103.418, 0, 74.414]` degrees. Acquisition passed two
+consecutive host samples (`[81,60,41,20,100]` and `[95,58,54,14,98]` ms),
+voltage stayed at 7.8--7.9 V, and 103 fixed targets were accepted. The next
+target was rejected because the firmware had entered `fault_hold`. The one-shot
+snapshot was:
+
+```text
+poll_id=3,poll_pending=1,poll_attempts=1,
+fb_age_ms=160|225|220|190|163,
+fb_stale=0|1|0|0|0,servo_error=0|0|0|0|0,
+poll_skips=30|26|24|32|36,last_seq=103
+```
+
+The state samples before the transition had maximum reported ages
+`163|137|194|165|159` ms and no stale/error rows; the integer age fields are
+truncated, so the stale flag is the decisive signal. Cleanup stopped into
+HOLD; no release or automatic retry followed. No Stage 9B motion was run.
+
+This confirms the new retry bound does not by itself eliminate the runtime
+feedback fault: one ID (ID 2) still reached the genuine stale/fail-safe path
+under the active target stream. The 250 ms freshness threshold remains
+unchanged. The next investigation must distinguish intermittent UART/bus
+contention from an actuator response problem; do not weaken freshness or infer
+motion quality from this no-motion failure.
+
+## 2026-09-19 — Feedback-poll fairness hardening (pre-hardware)
+
+The two failed Stage 9B repeats showed that the existing five-ID response-gated
+poller could enter a Creature Stream feedback fault during an otherwise healthy
+motion stream. Review confirmed that one unanswered ID could consume three
+60 ms request attempts before the round-robin advanced. This was compatible
+with fail-safe stale marking, but gave the remaining IDs too little freshness
+margin during host streaming.
+
+The scheduler now uses two total attempts (initial request plus one retry), so
+one missing ID is bounded to about 140 ms including the 20 ms scheduler wake-up.
+The 250 ms firmware freshness predicate and all target/watchdog safety checks
+are unchanged. A focused scheduler contract test covers bounded retries,
+stale-on-final-timeout, round-robin progress, and the freshness bound.
+
+When feedback health first trips `fault_hold`, telemetry emits one
+`CREATURE_FAULT` snapshot containing per-joint age/stale/error state, current
+poll ID, pending/attempt state, skip counters, and the last accepted sequence.
+This is diagnostic only; no physical validation or parameter tuning has been
+performed for this revision yet.
+
+## 2026-09-19 — Feedback-arbitration fix: fixed-target pass, Stage 9B stale stop
+
+Firmware `72109ea` was built and flashed through the documented `rig_env` /
+ESP-IDF workflow. The device ELF SHA was
+`7c28bc1b41f0bffd9bc6719edc8938cef285b0d477191208a1c136b97a6569d6`.
+The firmware-side change is limited to bounded feedback arbitration and
+diagnostics; no servo EEPROM, PID, dead-zone, or startup-force parameter was
+changed.
+
+After `mlab idle off`, the supervised 10-second fixed-target diagnostic
+accepted 84 targets. It reported no stale flags, timeouts, checksum or
+malformed frames, unexpected IDs, or servo errors. Feedback ages remained
+below 165 ms, voltage was 7.9--8.1 V, and the observed diagnostic deltas were
+97--98 requests per ID with 97--98 valid responses per ID. The immutable
+artifact is
+`artifacts/physical/20260919T_feedback-diagnostics-no-motion-r4/`.
+
+The required short Stage 9B scene was then run exactly once under supervision
+using the same 7.5-second plan (rest transition 0--2 s, startle at 2.2 s,
+return at 5.5 s). Acquisition passed with two fresh samples
+`[49,29,9,114,74] ms` and `[66,46,126,106,86] ms`; voltage was 7.9 V at
+acquisition and 7.8--8.1 V during the stream. The device accepted 209 target
+frames and then ACKed the next target with `feedback_fresh=0`. The host
+entered its fail-closed path, stopped into ordinary HOLD, and closed without
+release or retry. No 28-second session, tuning, or second physical motion was
+run. The immutable artifact is
+`artifacts/physical/20260919T_stage9b-feedback-arbitration-r1/`.
+
+This run confirms that the short-window bus arbitration fix removes the
+previous fixed-target corruption/freshness failure, but it does not yet close
+the active-stream freshness problem. The remaining stale event is not
+isolated as bus versus actuator behavior; preserve the capture and do not
+weaken the firmware freshness predicate or infer motion quality from this
+partial run.
+
+## 2026-09-19 — Motion-dependent feedback isolation stopped on J0 path
+
+After the previous Stage 9B stale ACK, the human power-cycled the arm and
+inspected the accessible 3-pin connectors and cable routing. No loose or
+partially backed-out connector, obvious cable damage, or cable tension was
+reported. No mechanical modification was made.
+
+A one-shot sequential diagnostic then used the same verified firmware ELF
+(`7c28bc1b41f0bffd9bc6719edc8938cef285b0d477191208a1c136b97a6569d6`) and
+performed one smooth approximately 8-degree excursion/hold/return per joint,
+in J0-to-J4 order. It stopped during the first J0 return at sequence 70
+(about 2.07 seconds) when the target ACK reported `feedback_fresh=0`.
+No J1--J4 excursion was started; the host entered HOLD and did not release or
+retry. The immutable artifact is
+`artifacts/physical/20260919T_motion-dependent-isolation-r1/`.
+
+The failure did not include an asynchronous `CREATURE_FAULT` line. The
+before/after `mlab poll stats` deltas were approximately 46 requests and
+46 valid responses per ID, with no new timeout, checksum, malformed, or
+bus-overlap counts; deferred-command count increased by 13. During ordinary
+state samples all five IDs were fresh, servo errors were zero, and voltage was
+7.9 V. Therefore this single run does not prove a J0 cable fault and does not
+justify another firmware arbitration change. It does show that the remaining
+failure is a transient freshness condition under motion, not a reproducible
+fixed-target corruption pattern. The next safe action is targeted inspection
+of the J0/base cable path while unpowered; do not weaken freshness or run the
+final Stage 9B session until that evidence is available.
+
+## 2026-09-19 — Feedback-response guard and final short Stage 9B validation
+
+The motion-dependent failures were compared against the clean J0-only retry.
+The failed multi-joint stream had accumulated 99 additional `bus_overlap`
+events, 2 additional checksum-invalid frames, and 1603 additional deferred
+commands relative to that clean run; `bus_overlap_last_seq=126` matched the
+failed target sequence. This pointed to a remaining half-duplex arbitration
+window rather than a stale actuator state.
+
+Firmware commit `418e13b` changed only the command/feedback arbitration guard:
+while any feedback request is awaiting its bounded response/retry window, a
+position command is deferred and retried after the pending transaction clears.
+The firmware was rebuilt and flashed through `rig_env`/ESP-IDF. The device
+reported protocol 2, experiments `0|1|2|3|4|5`, `reversal=1`, all five servos
+online with zero stale/error flags, and ELF SHA
+`0156d1a230eb33431a9e97020a32aa4a4caf2667f6c4523bbfb26f7d522e5934`.
+Stock idle was disabled for observation; no servo EEPROM/PID/dead-zone/startup
+parameters were changed.
+
+One supervised 7.5-second Stage 9B short scene was then run using the existing
+planner (rest transition 0--2 s, startle at 2.2 s, return at 5.5 s). Acquisition
+passed with two fresh samples: `[66,46,27,152,107] ms` and
+`[66,26,6,106,86] ms`; voltage was 8.1 V. All 251 planned targets were
+accepted, none were rejected, and the session completed normal stop/release
+with no stale feedback, watchdog/fault, or servo errors. The immutable artifact
+is `artifacts/physical/20260919T_stage9b-final-arbitration-fix-r1/`.
+
+This closes the short Stage 9B execution/safety gate for the current firmware
+revision. The prior failed captures remain preserved as negative evidence; the
+fix does not claim to remove the separately observed mechanical play/jerkiness.
+
+Human visual review of this successful run was acceptable but not especially
+smooth: the motion was usable for the vertical-slice gate, while the robot
+still read as somewhat mechanical/loose. No new abnormal sound, collision, or
+cable issue was reported. Treat expressive smoothness as a later motion-quality
+iteration; do not reopen this hardware-safety validation or infer a specific
+servo cause from this observation alone.

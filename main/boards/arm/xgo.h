@@ -26,9 +26,9 @@ typedef struct
 	short FbTor;
 	uint8_t FbError;
 	uint8_t FbLastError;
-	uint32_t FbLastErrorMs;
+	uint64_t FbLastErrorUs;
 	uint32_t FbErrorCount;
-	uint32_t FbTimestampMs;
+	uint64_t FbTimestampUs;
 	uint32_t FbSequence;
 	bool FbStale;
 	short ZeroPos;
@@ -79,11 +79,33 @@ bool SendMotorCommand(uint8_t *pData, uint16_t size);
 
 void xgo_control();
 void xgo_rx();
+uint32_t xgo_feedback_rx_interval_ms();
 void xgo_feedback_poll();
 uint32_t xgo_feedback_poll_interval_ms();
 void xgo_feedback_poll_config(uint8_t joint_index, uint32_t period_ms);
 void xgo_feedback_poll_disable();
 void xgo_feedback_poll_print_stats();
+typedef struct {
+    uint8_t poll_id;
+    bool request_pending;
+    uint8_t attempts;
+    uint32_t skip_count[MOTOR_NUM];
+} XgoFeedbackPollSnapshot;
+void xgo_feedback_poll_get_snapshot(XgoFeedbackPollSnapshot* out);
+typedef struct {
+    uint32_t request_count[MOTOR_NUM];
+    uint32_t valid_response_count[MOTOR_NUM];
+    uint32_t timeout_count[MOTOR_NUM];
+    uint32_t checksum_invalid_count;
+    uint32_t malformed_packet_count;
+    uint32_t unexpected_response_count;
+    uint32_t bus_overlap_count;
+    uint32_t deferred_command_count;
+    uint8_t bus_overlap_pending_id;
+    uint32_t bus_overlap_pending_age_ms;
+    uint32_t bus_overlap_last_sequence;
+} XgoFeedbackDiagnostics;
+void xgo_feedback_poll_get_diagnostics(XgoFeedbackDiagnostics* out);
 // Read-only SCS009 factory/control-table snapshot, printed to UART0.
 void xgo_dump_factory_parameters();
 // Read-only live/error-latch snapshot for servo bring-up diagnostics.
