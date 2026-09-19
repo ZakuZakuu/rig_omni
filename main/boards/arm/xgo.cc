@@ -443,7 +443,6 @@ namespace {
 constexpr uint32_t kFeedbackRequestTimeoutMs = rig_arm_feedback::kRequestTimeoutMs;
 constexpr uint32_t kFeedbackHighRateTaskIntervalMs = 5;
 constexpr uint32_t kFeedbackBackgroundPeriodMs = 100;
-constexpr uint32_t kFeedbackResponseGuardMs = 8;
 
 uint8_t next_feedback_id(uint8_t current) {
     return rig_arm_feedback::next_id(current);
@@ -485,8 +484,11 @@ static void record_feedback_bus_overlap() {
 
 static bool feedback_response_window_should_defer_command() {
     if (!feedback_poll_waiting) return false;
-    const uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
-    if (now_ms - feedback_poll_sent_ms >= kFeedbackResponseGuardMs) return false;
+    // The servo bus is half-duplex: once a status request is outstanding,
+    // sending a broadcast position packet can corrupt either transaction.
+    // Keep the command deferred for the entire bounded request/retry window.
+    // SetMotorPos() returns immediately, so this does not block the 2 ms task;
+    // the next due command is sent after the poller clears the pending flag.
     feedback_deferred_command_count = feedback_deferred_command_count + 1;
     return true;
 }
