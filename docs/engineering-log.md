@@ -1254,3 +1254,10 @@ is `artifacts/physical/20260919T_stage9b-final-arbitration-fix-r1/`.
 This closes the short Stage 9B execution/safety gate for the current firmware
 revision. The prior failed captures remain preserved as negative evidence; the
 fix does not claim to remove the separately observed mechanical play/jerkiness.
+
+Human visual review of this successful run was acceptable but not especially
+smooth: the motion was usable for the vertical-slice gate, while the robot
+still read as somewhat mechanical/loose. No new abnormal sound, collision, or
+cable issue was reported. Treat expressive smoothness as a later motion-quality
+iteration; do not reopen this hardware-safety validation or infer a specific
+servo cause from this observation alone.
