@@ -1056,3 +1056,29 @@ consecutive healthy samples (`70/49/29/9/111 ms`) in approximately 306 ms.
 was sent; the human observed no jump, sound, cable strain, or other physical
 reaction. This verifies the acquisition race fix only and is not a Creature
 Motion acceptance run.
+
+## 2026-09-19 — Human-visible Creature Stream ownership proof
+
+The earlier rapid `take -> state -> release` check was not a human-visible
+ownership validation: the human did not observe it, and legacy idle was
+already moving. A separate supervised check was run with the host acquisition
+margin enabled. Firmware runtime and servo parameters were unchanged.
+
+The human first confirmed visible legacy-idle sway. The host used the bounded
+two-sample readiness gate with `fb_age_ms <= 200` and observed passing ages:
+
+```text
+[67, 48, 28, 8, 88] ms
+[65, 46, 26, 1, 86] ms
+```
+
+`creature take` returned `accepted` with `owner=hold`. Six read-only state
+queries over 3.14 s all reported `owner=hold`, `holding=true`, no stale
+feedback, no servo errors, and no watchdog timeout. No target or Motion Lab
+command was sent. The human confirmed that legacy sway stopped and the robot
+held its posture during HOLD. `creature release` returned `accepted` with
+`owner=released`, and the human confirmed that legacy idle resumed.
+
+The immutable host artifact is
+`artifacts/physical/20260919T_ownership-hold-observation-r3/`. This is a
+successful ownership proof only; no Creature Motion session was run.
