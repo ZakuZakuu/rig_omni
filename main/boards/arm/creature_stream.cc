@@ -135,6 +135,7 @@ void capture_fault_snapshot(uint64_t now_us) {
     fault_snapshot.malformed_packet_count = diagnostics.malformed_packet_count;
     fault_snapshot.unexpected_response_count = diagnostics.unexpected_response_count;
     fault_snapshot.bus_overlap_count = diagnostics.bus_overlap_count;
+    fault_snapshot.deferred_command_count = diagnostics.deferred_command_count;
     fault_snapshot.bus_overlap_pending_id = diagnostics.bus_overlap_pending_id;
     fault_snapshot.bus_overlap_pending_age_ms = diagnostics.bus_overlap_pending_age_ms;
     fault_snapshot.bus_overlap_last_sequence = diagnostics.bus_overlap_last_sequence;

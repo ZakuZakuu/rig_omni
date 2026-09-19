@@ -79,6 +79,7 @@ bool SendMotorCommand(uint8_t *pData, uint16_t size);
 
 void xgo_control();
 void xgo_rx();
+uint32_t xgo_feedback_rx_interval_ms();
 void xgo_feedback_poll();
 uint32_t xgo_feedback_poll_interval_ms();
 void xgo_feedback_poll_config(uint8_t joint_index, uint32_t period_ms);
@@ -99,6 +100,7 @@ typedef struct {
     uint32_t malformed_packet_count;
     uint32_t unexpected_response_count;
     uint32_t bus_overlap_count;
+    uint32_t deferred_command_count;
     uint8_t bus_overlap_pending_id;
     uint32_t bus_overlap_pending_age_ms;
     uint32_t bus_overlap_last_sequence;

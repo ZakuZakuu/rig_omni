@@ -1153,7 +1153,7 @@ public:
                 // Characterization mode shortens the parser cadence together
                 // with the selected-joint poller; normal firmware remains at
                 // the stock 20 ms feedback task period.
-                vTaskDelay(pdMS_TO_TICKS(xgo_feedback_poll_interval_ms()));
+                vTaskDelay(pdMS_TO_TICKS(xgo_feedback_rx_interval_ms()));
             }
             vTaskDelete(NULL);
         }, "xgo_rx_task", 4096, this, 5, &xgo_rx_task_handle_, 1);
@@ -1181,7 +1181,7 @@ public:
                 const uint32_t now_ms = static_cast<uint32_t>(now_us / 1000ULL);
                 CreatureStreamFaultSnapshot fault = {};
                 if (creature_stream_take_fault_snapshot(&fault)) {
-                    printf("CREATURE_FAULT,reason=feedback_unhealthy,ts_ms=%lu,last_seq=%lu,poll_id=%u,poll_pending=%d,poll_attempts=%u,fb_pos=%d|%d|%d|%d|%d,fb_age_ms=%lu|%lu|%lu|%lu|%lu,fb_stale=%d|%d|%d|%d|%d,servo_error=%d|%d|%d|%d|%d,poll_skips=%lu|%lu|%lu|%lu|%lu,poll_req=%lu|%lu|%lu|%lu|%lu,poll_valid=%lu|%lu|%lu|%lu|%lu,poll_timeout=%lu|%lu|%lu|%lu|%lu,checksum_invalid=%lu,malformed=%lu,unexpected_id=%lu,bus_overlap=%lu,bus_pending_id=%u,bus_pending_age_ms=%lu,bus_overlap_last_seq=%lu\r\n",
+                    printf("CREATURE_FAULT,reason=feedback_unhealthy,ts_ms=%lu,last_seq=%lu,poll_id=%u,poll_pending=%d,poll_attempts=%u,fb_pos=%d|%d|%d|%d|%d,fb_age_ms=%lu|%lu|%lu|%lu|%lu,fb_stale=%d|%d|%d|%d|%d,servo_error=%d|%d|%d|%d|%d,poll_skips=%lu|%lu|%lu|%lu|%lu,poll_req=%lu|%lu|%lu|%lu|%lu,poll_valid=%lu|%lu|%lu|%lu|%lu,poll_timeout=%lu|%lu|%lu|%lu|%lu,checksum_invalid=%lu,malformed=%lu,unexpected_id=%lu,bus_overlap=%lu,deferred_cmd=%lu,bus_pending_id=%u,bus_pending_age_ms=%lu,bus_overlap_last_seq=%lu\r\n",
                            static_cast<unsigned long>(fault.timestamp_ms),
                            static_cast<unsigned long>(fault.last_sequence),
                            static_cast<unsigned>(fault.poll_id), fault.poll_pending ? 1 : 0,
@@ -1222,6 +1222,7 @@ public:
                            static_cast<unsigned long>(fault.malformed_packet_count),
                            static_cast<unsigned long>(fault.unexpected_response_count),
                            static_cast<unsigned long>(fault.bus_overlap_count),
+                           static_cast<unsigned long>(fault.deferred_command_count),
                            static_cast<unsigned>(fault.bus_overlap_pending_id),
                            static_cast<unsigned long>(fault.bus_overlap_pending_age_ms),
                            static_cast<unsigned long>(fault.bus_overlap_last_sequence));

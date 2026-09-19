@@ -33,6 +33,7 @@ uint8_t actionLoop_FLAG = 0;
 uint8_t serial_lock = 0;
 
 static void record_feedback_bus_overlap();
+static bool feedback_response_window_should_defer_command();
 
 int calibrate_mode = 0;
 int init_flag = 0;
@@ -206,6 +207,9 @@ bool SendMotorCommand(uint8_t *pData,uint16_t size)
 }
 
 void SetMotorPos(short pos[], short vel) {
+    if (feedback_response_window_should_defer_command()) {
+        return;
+    }
     const int l_a = MOTOR_NUM;
     const uint8_t inst_length = (uint8_t)((6 + 1) * l_a + 4);
     uint8_t data_buf[5 + 7 * MOTOR_NUM];
@@ -418,6 +422,7 @@ static volatile uint32_t feedback_checksum_invalid_count = 0;
 static volatile uint32_t feedback_malformed_packet_count = 0;
 static volatile uint32_t feedback_unexpected_response_count = 0;
 static volatile uint32_t feedback_bus_overlap_count = 0;
+static volatile uint32_t feedback_deferred_command_count = 0;
 static volatile uint8_t feedback_bus_overlap_pending_id = 0;
 static volatile uint32_t feedback_bus_overlap_pending_age_ms = 0;
 static volatile uint32_t feedback_bus_overlap_last_sequence = 0;
@@ -438,6 +443,7 @@ namespace {
 constexpr uint32_t kFeedbackRequestTimeoutMs = rig_arm_feedback::kRequestTimeoutMs;
 constexpr uint32_t kFeedbackHighRateTaskIntervalMs = 5;
 constexpr uint32_t kFeedbackBackgroundPeriodMs = 100;
+constexpr uint32_t kFeedbackResponseGuardMs = 8;
 
 uint8_t next_feedback_id(uint8_t current) {
     return rig_arm_feedback::next_id(current);
@@ -475,6 +481,14 @@ static void record_feedback_bus_overlap() {
     } else {
         feedback_bus_overlap_last_sequence = 0;
     }
+}
+
+static bool feedback_response_window_should_defer_command() {
+    if (!feedback_poll_waiting) return false;
+    const uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
+    if (now_ms - feedback_poll_sent_ms >= kFeedbackResponseGuardMs) return false;
+    feedback_deferred_command_count = feedback_deferred_command_count + 1;
+    return true;
 }
 
 bool xgo_tune_apply(XgoTuneParameter parameter, uint16_t raw_value) {
@@ -872,6 +886,12 @@ uint32_t xgo_feedback_poll_interval_ms() {
         : rig_arm_feedback::kTaskIntervalMs;
 }
 
+uint32_t xgo_feedback_rx_interval_ms() {
+    // Keep the RX parser responsive to the short servo response window. The
+    // feedback request scheduler remains at its independent 20 ms cadence.
+    return 1;
+}
+
 void xgo_feedback_poll_config(uint8_t joint_index, uint32_t period_ms) {
     if (joint_index >= MOTOR_NUM || period_ms < kFeedbackHighRateTaskIntervalMs || period_ms > 100) {
         return;
@@ -908,7 +928,7 @@ void xgo_feedback_poll_print_stats() {
         : 0;
     XgoFeedbackDiagnostics diagnostics = {};
     xgo_feedback_poll_get_diagnostics(&diagnostics);
-    printf("MLAB_POLL stats: enabled=%d joint=%u period_ms=%lu valid=%lu span_ms=%lu rate_mHz=%lu max_gap_ms=%lu skips=%lu|%lu|%lu|%lu|%lu,requests=%lu|%lu|%lu|%lu|%lu,valid_by_id=%lu|%lu|%lu|%lu|%lu,timeouts=%lu|%lu|%lu|%lu|%lu,checksum_invalid=%lu,malformed=%lu,unexpected_id=%lu,bus_overlap=%lu,bus_pending_id=%u,bus_pending_age_ms=%lu,bus_overlap_last_seq=%lu\r\n",
+    printf("MLAB_POLL stats: enabled=%d joint=%u period_ms=%lu valid=%lu span_ms=%lu rate_mHz=%lu max_gap_ms=%lu skips=%lu|%lu|%lu|%lu|%lu,requests=%lu|%lu|%lu|%lu|%lu,valid_by_id=%lu|%lu|%lu|%lu|%lu,timeouts=%lu|%lu|%lu|%lu|%lu,checksum_invalid=%lu,malformed=%lu,unexpected_id=%lu,bus_overlap=%lu,deferred_cmd=%lu,bus_pending_id=%u,bus_pending_age_ms=%lu,bus_overlap_last_seq=%lu\r\n",
            feedback_high_rate_enabled ? 1 : 0,
            feedback_high_rate_joint,
            static_cast<unsigned long>(feedback_high_rate_period_ms),
@@ -940,6 +960,7 @@ void xgo_feedback_poll_print_stats() {
            static_cast<unsigned long>(diagnostics.malformed_packet_count),
            static_cast<unsigned long>(diagnostics.unexpected_response_count),
            static_cast<unsigned long>(diagnostics.bus_overlap_count),
+           static_cast<unsigned long>(diagnostics.deferred_command_count),
            static_cast<unsigned>(diagnostics.bus_overlap_pending_id),
            static_cast<unsigned long>(diagnostics.bus_overlap_pending_age_ms),
            static_cast<unsigned long>(diagnostics.bus_overlap_last_sequence));
@@ -966,6 +987,7 @@ void xgo_feedback_poll_get_diagnostics(XgoFeedbackDiagnostics* out) {
     out->malformed_packet_count = feedback_malformed_packet_count;
     out->unexpected_response_count = feedback_unexpected_response_count;
     out->bus_overlap_count = feedback_bus_overlap_count;
+    out->deferred_command_count = feedback_deferred_command_count;
     out->bus_overlap_pending_id = feedback_bus_overlap_pending_id;
     out->bus_overlap_pending_age_ms = feedback_bus_overlap_pending_age_ms;
     out->bus_overlap_last_sequence = feedback_bus_overlap_last_sequence;
