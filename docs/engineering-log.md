@@ -1195,3 +1195,31 @@ the active-stream freshness problem. The remaining stale event is not
 isolated as bus versus actuator behavior; preserve the capture and do not
 weaken the firmware freshness predicate or infer motion quality from this
 partial run.
+
+## 2026-09-19 — Motion-dependent feedback isolation stopped on J0 path
+
+After the previous Stage 9B stale ACK, the human power-cycled the arm and
+inspected the accessible 3-pin connectors and cable routing. No loose or
+partially backed-out connector, obvious cable damage, or cable tension was
+reported. No mechanical modification was made.
+
+A one-shot sequential diagnostic then used the same verified firmware ELF
+(`7c28bc1b41f0bffd9bc6719edc8938cef285b0d477191208a1c136b97a6569d6`) and
+performed one smooth approximately 8-degree excursion/hold/return per joint,
+in J0-to-J4 order. It stopped during the first J0 return at sequence 70
+(about 2.07 seconds) when the target ACK reported `feedback_fresh=0`.
+No J1--J4 excursion was started; the host entered HOLD and did not release or
+retry. The immutable artifact is
+`artifacts/physical/20260919T_motion-dependent-isolation-r1/`.
+
+The failure did not include an asynchronous `CREATURE_FAULT` line. The
+before/after `mlab poll stats` deltas were approximately 46 requests and
+46 valid responses per ID, with no new timeout, checksum, malformed, or
+bus-overlap counts; deferred-command count increased by 13. During ordinary
+state samples all five IDs were fresh, servo errors were zero, and voltage was
+7.9 V. Therefore this single run does not prove a J0 cable fault and does not
+justify another firmware arbitration change. It does show that the remaining
+failure is a transient freshness condition under motion, not a reproducible
+fixed-target corruption pattern. The next safe action is targeted inspection
+of the J0/base cable path while unpowered; do not weaken freshness or run the
+final Stage 9B session until that evidence is available.
