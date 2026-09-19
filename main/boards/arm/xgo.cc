@@ -32,6 +32,8 @@ uint8_t Action_ID = 0;
 uint8_t actionLoop_FLAG = 0;
 uint8_t serial_lock = 0;
 
+static void record_feedback_bus_overlap();
+
 int calibrate_mode = 0;
 int init_flag = 0;
 float vx = 0.0;
@@ -238,6 +240,7 @@ void SetMotorPos(short pos[], short vel) {
         packet[2 + i] = data_buf[i];
     }
     packet[2 + idx] = (uint8_t)(255 - (check_sum & 0xFF));
+    record_feedback_bus_overlap();
     SendMotorCommand(packet, 3 + idx);
 }
 
@@ -408,6 +411,16 @@ static volatile bool feedback_poll_waiting = false;
 static volatile uint32_t feedback_poll_sent_ms = 0;
 static volatile uint8_t feedback_poll_attempts = 0;
 static volatile uint32_t feedback_poll_skip_count[MOTOR_NUM] = {};
+static volatile uint32_t feedback_request_count[MOTOR_NUM] = {};
+static volatile uint32_t feedback_valid_response_count[MOTOR_NUM] = {};
+static volatile uint32_t feedback_timeout_count[MOTOR_NUM] = {};
+static volatile uint32_t feedback_checksum_invalid_count = 0;
+static volatile uint32_t feedback_malformed_packet_count = 0;
+static volatile uint32_t feedback_unexpected_response_count = 0;
+static volatile uint32_t feedback_bus_overlap_count = 0;
+static volatile uint8_t feedback_bus_overlap_pending_id = 0;
+static volatile uint32_t feedback_bus_overlap_pending_age_ms = 0;
+static volatile uint32_t feedback_bus_overlap_last_sequence = 0;
 static volatile bool feedback_high_rate_enabled = false;
 static volatile uint8_t feedback_high_rate_joint = 0;
 static volatile uint32_t feedback_high_rate_period_ms = 20;
@@ -448,6 +461,21 @@ bool is_high_rate_id(uint8_t id) {
 }
 
 }  // namespace
+
+static void record_feedback_bus_overlap() {
+    if (!feedback_poll_waiting) return;
+    const uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
+    feedback_bus_overlap_count = feedback_bus_overlap_count + 1;
+    feedback_bus_overlap_pending_id = feedback_poll_id;
+    feedback_bus_overlap_pending_age_ms = now_ms - feedback_poll_sent_ms;
+    if (creature_stream_is_owned()) {
+        CreatureStreamSnapshot stream = {};
+        creature_stream_get_snapshot(&stream, static_cast<uint64_t>(now_ms) * 1000ULL);
+        feedback_bus_overlap_last_sequence = stream.last_sequence;
+    } else {
+        feedback_bus_overlap_last_sequence = 0;
+    }
+}
 
 bool xgo_tune_apply(XgoTuneParameter parameter, uint16_t raw_value) {
     if (creature_stream_is_owned() || motion_lab_is_active() || teach_state != TEACH_IDLE ||
@@ -652,6 +680,7 @@ void xgo_rx(){
                         checkSum = 0;
                     }
                 else{
+                    feedback_malformed_packet_count = feedback_malformed_packet_count + 1;
                     rxFlag = 0;
                 }                    
                 break;
@@ -688,6 +717,8 @@ void xgo_rx(){
                         TOR_HIGH_Byte =  rxBuffer[rxDataLen + 2];
                         if(packet_id>0&&packet_id<=MOTOR_NUM){
                             const uint8_t motor_index = packet_id - 1;
+                            feedback_valid_response_count[motor_index] =
+                                feedback_valid_response_count[motor_index] + 1;
                             const uint8_t status_error = rxBuffer[4];
                             motor[motor_index].FbError = status_error;
                             if (status_error != 0) {
@@ -703,6 +734,10 @@ void xgo_rx(){
                                 static_cast<uint64_t>(esp_timer_get_time());
                             motor[motor_index].FbSequence++;
                             motor[motor_index].FbStale = false;
+                            if (feedback_poll_waiting && packet_id != feedback_poll_id) {
+                                feedback_unexpected_response_count =
+                                    feedback_unexpected_response_count + 1;
+                            }
                             if (feedback_poll_waiting && packet_id == feedback_poll_id) {
                                 feedback_poll_waiting = false;
                                 const uint32_t response_ms =
@@ -729,9 +764,16 @@ void xgo_rx(){
                             if (teach_state != TEACH_RECORDING) {
                                 CheckMotorStall(packet_id);
                             }
+                        } else {
+                            feedback_unexpected_response_count =
+                                feedback_unexpected_response_count + 1;
                         }
-                        
-                        }	 
+                        } else {
+                            feedback_unexpected_response_count =
+                                feedback_unexpected_response_count + 1;
+                        }
+                    } else {
+                        feedback_checksum_invalid_count = feedback_checksum_invalid_count + 1;
                     }
                     checkSum = 0;
                     rxFlag = 0;                  			
@@ -761,6 +803,11 @@ void xgo_feedback_poll() {
         if (rig_arm_feedback::retry_allowed(feedback_poll_attempts)) {
             // Fall through and retry the same request below.
         } else if (rig_arm_feedback::should_mark_stale(feedback_poll_attempts)) {
+            const uint8_t stale_index = feedback_poll_id - 1;
+            if (stale_index < MOTOR_NUM) {
+                feedback_timeout_count[stale_index] =
+                    feedback_timeout_count[stale_index] + 1;
+            }
             mark_feedback_skip(feedback_poll_id);
             if (is_high_rate_id(feedback_poll_id)) {
                 feedback_high_rate_next_ms = now_ms + feedback_high_rate_period_ms;
@@ -805,6 +852,11 @@ void xgo_feedback_poll() {
     }
 
     if (ReadMotorState(feedback_poll_id)) {
+        const uint8_t request_index = feedback_poll_id - 1;
+        if (request_index < MOTOR_NUM) {
+            feedback_request_count[request_index] =
+                feedback_request_count[request_index] + 1;
+        }
         feedback_poll_sent_ms = now_ms;
         feedback_poll_waiting = true;
         feedback_poll_attempts = feedback_poll_attempts + 1;
@@ -854,7 +906,9 @@ void xgo_feedback_poll_print_stats() {
     const uint32_t rate_mhz = span > 0
         ? static_cast<uint32_t>((static_cast<uint64_t>(feedback_high_valid_count - 1) * 1000000ULL) / span)
         : 0;
-    printf("MLAB_POLL stats: enabled=%d joint=%u period_ms=%lu valid=%lu span_ms=%lu rate_mHz=%lu max_gap_ms=%lu skips=%lu|%lu|%lu|%lu|%lu\r\n",
+    XgoFeedbackDiagnostics diagnostics = {};
+    xgo_feedback_poll_get_diagnostics(&diagnostics);
+    printf("MLAB_POLL stats: enabled=%d joint=%u period_ms=%lu valid=%lu span_ms=%lu rate_mHz=%lu max_gap_ms=%lu skips=%lu|%lu|%lu|%lu|%lu,requests=%lu|%lu|%lu|%lu|%lu,valid_by_id=%lu|%lu|%lu|%lu|%lu,timeouts=%lu|%lu|%lu|%lu|%lu,checksum_invalid=%lu,malformed=%lu,unexpected_id=%lu,bus_overlap=%lu,bus_pending_id=%u,bus_pending_age_ms=%lu,bus_overlap_last_seq=%lu\r\n",
            feedback_high_rate_enabled ? 1 : 0,
            feedback_high_rate_joint,
            static_cast<unsigned long>(feedback_high_rate_period_ms),
@@ -866,7 +920,29 @@ void xgo_feedback_poll_print_stats() {
            static_cast<unsigned long>(feedback_poll_skip_count[1]),
            static_cast<unsigned long>(feedback_poll_skip_count[2]),
            static_cast<unsigned long>(feedback_poll_skip_count[3]),
-           static_cast<unsigned long>(feedback_poll_skip_count[4]));
+           static_cast<unsigned long>(feedback_poll_skip_count[4]),
+           static_cast<unsigned long>(diagnostics.request_count[0]),
+           static_cast<unsigned long>(diagnostics.request_count[1]),
+           static_cast<unsigned long>(diagnostics.request_count[2]),
+           static_cast<unsigned long>(diagnostics.request_count[3]),
+           static_cast<unsigned long>(diagnostics.request_count[4]),
+           static_cast<unsigned long>(diagnostics.valid_response_count[0]),
+           static_cast<unsigned long>(diagnostics.valid_response_count[1]),
+           static_cast<unsigned long>(diagnostics.valid_response_count[2]),
+           static_cast<unsigned long>(diagnostics.valid_response_count[3]),
+           static_cast<unsigned long>(diagnostics.valid_response_count[4]),
+           static_cast<unsigned long>(diagnostics.timeout_count[0]),
+           static_cast<unsigned long>(diagnostics.timeout_count[1]),
+           static_cast<unsigned long>(diagnostics.timeout_count[2]),
+           static_cast<unsigned long>(diagnostics.timeout_count[3]),
+           static_cast<unsigned long>(diagnostics.timeout_count[4]),
+           static_cast<unsigned long>(diagnostics.checksum_invalid_count),
+           static_cast<unsigned long>(diagnostics.malformed_packet_count),
+           static_cast<unsigned long>(diagnostics.unexpected_response_count),
+           static_cast<unsigned long>(diagnostics.bus_overlap_count),
+           static_cast<unsigned>(diagnostics.bus_overlap_pending_id),
+           static_cast<unsigned long>(diagnostics.bus_overlap_pending_age_ms),
+           static_cast<unsigned long>(diagnostics.bus_overlap_last_sequence));
 }
 
 void xgo_feedback_poll_get_snapshot(XgoFeedbackPollSnapshot* out) {
@@ -877,6 +953,22 @@ void xgo_feedback_poll_get_snapshot(XgoFeedbackPollSnapshot* out) {
     for (int i = 0; i < MOTOR_NUM; ++i) {
         out->skip_count[i] = feedback_poll_skip_count[i];
     }
+}
+
+void xgo_feedback_poll_get_diagnostics(XgoFeedbackDiagnostics* out) {
+    if (out == nullptr) return;
+    for (int i = 0; i < MOTOR_NUM; ++i) {
+        out->request_count[i] = feedback_request_count[i];
+        out->valid_response_count[i] = feedback_valid_response_count[i];
+        out->timeout_count[i] = feedback_timeout_count[i];
+    }
+    out->checksum_invalid_count = feedback_checksum_invalid_count;
+    out->malformed_packet_count = feedback_malformed_packet_count;
+    out->unexpected_response_count = feedback_unexpected_response_count;
+    out->bus_overlap_count = feedback_bus_overlap_count;
+    out->bus_overlap_pending_id = feedback_bus_overlap_pending_id;
+    out->bus_overlap_pending_age_ms = feedback_bus_overlap_pending_age_ms;
+    out->bus_overlap_last_sequence = feedback_bus_overlap_last_sequence;
 }
 
 void detect_triple_click() {

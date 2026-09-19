@@ -124,6 +124,20 @@ void capture_fault_snapshot(uint64_t now_us) {
     for (int i = 0; i < MOTOR_NUM; ++i) {
         fault_snapshot.poll_skip_count[i] = poll.skip_count[i];
     }
+    XgoFeedbackDiagnostics diagnostics = {};
+    xgo_feedback_poll_get_diagnostics(&diagnostics);
+    for (int i = 0; i < MOTOR_NUM; ++i) {
+        fault_snapshot.poll_request_count[i] = diagnostics.request_count[i];
+        fault_snapshot.poll_valid_response_count[i] = diagnostics.valid_response_count[i];
+        fault_snapshot.poll_timeout_count[i] = diagnostics.timeout_count[i];
+    }
+    fault_snapshot.checksum_invalid_count = diagnostics.checksum_invalid_count;
+    fault_snapshot.malformed_packet_count = diagnostics.malformed_packet_count;
+    fault_snapshot.unexpected_response_count = diagnostics.unexpected_response_count;
+    fault_snapshot.bus_overlap_count = diagnostics.bus_overlap_count;
+    fault_snapshot.bus_overlap_pending_id = diagnostics.bus_overlap_pending_id;
+    fault_snapshot.bus_overlap_pending_age_ms = diagnostics.bus_overlap_pending_age_ms;
+    fault_snapshot.bus_overlap_last_sequence = diagnostics.bus_overlap_last_sequence;
     fault_snapshot_pending = true;
 }
 

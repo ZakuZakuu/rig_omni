@@ -57,6 +57,16 @@ struct CreatureStreamFaultSnapshot {
     bool poll_pending;
     uint8_t poll_attempts;
     uint32_t poll_skip_count[CREATURE_STREAM_JOINTS];
+    uint32_t poll_request_count[CREATURE_STREAM_JOINTS];
+    uint32_t poll_valid_response_count[CREATURE_STREAM_JOINTS];
+    uint32_t poll_timeout_count[CREATURE_STREAM_JOINTS];
+    uint32_t checksum_invalid_count;
+    uint32_t malformed_packet_count;
+    uint32_t unexpected_response_count;
+    uint32_t bus_overlap_count;
+    uint8_t bus_overlap_pending_id;
+    uint32_t bus_overlap_pending_age_ms;
+    uint32_t bus_overlap_last_sequence;
 };
 
 void creature_stream_init();

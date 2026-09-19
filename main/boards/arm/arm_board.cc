@@ -1181,7 +1181,7 @@ public:
                 const uint32_t now_ms = static_cast<uint32_t>(now_us / 1000ULL);
                 CreatureStreamFaultSnapshot fault = {};
                 if (creature_stream_take_fault_snapshot(&fault)) {
-                    printf("CREATURE_FAULT,reason=feedback_unhealthy,ts_ms=%lu,last_seq=%lu,poll_id=%u,poll_pending=%d,poll_attempts=%u,fb_pos=%d|%d|%d|%d|%d,fb_age_ms=%lu|%lu|%lu|%lu|%lu,fb_stale=%d|%d|%d|%d|%d,servo_error=%d|%d|%d|%d|%d,poll_skips=%lu|%lu|%lu|%lu|%lu\r\n",
+                    printf("CREATURE_FAULT,reason=feedback_unhealthy,ts_ms=%lu,last_seq=%lu,poll_id=%u,poll_pending=%d,poll_attempts=%u,fb_pos=%d|%d|%d|%d|%d,fb_age_ms=%lu|%lu|%lu|%lu|%lu,fb_stale=%d|%d|%d|%d|%d,servo_error=%d|%d|%d|%d|%d,poll_skips=%lu|%lu|%lu|%lu|%lu,poll_req=%lu|%lu|%lu|%lu|%lu,poll_valid=%lu|%lu|%lu|%lu|%lu,poll_timeout=%lu|%lu|%lu|%lu|%lu,checksum_invalid=%lu,malformed=%lu,unexpected_id=%lu,bus_overlap=%lu,bus_pending_id=%u,bus_pending_age_ms=%lu,bus_overlap_last_seq=%lu\r\n",
                            static_cast<unsigned long>(fault.timestamp_ms),
                            static_cast<unsigned long>(fault.last_sequence),
                            static_cast<unsigned>(fault.poll_id), fault.poll_pending ? 1 : 0,
@@ -1202,7 +1202,29 @@ public:
                            static_cast<unsigned long>(fault.poll_skip_count[1]),
                            static_cast<unsigned long>(fault.poll_skip_count[2]),
                            static_cast<unsigned long>(fault.poll_skip_count[3]),
-                           static_cast<unsigned long>(fault.poll_skip_count[4]));
+                           static_cast<unsigned long>(fault.poll_skip_count[4]),
+                           static_cast<unsigned long>(fault.poll_request_count[0]),
+                           static_cast<unsigned long>(fault.poll_request_count[1]),
+                           static_cast<unsigned long>(fault.poll_request_count[2]),
+                           static_cast<unsigned long>(fault.poll_request_count[3]),
+                           static_cast<unsigned long>(fault.poll_request_count[4]),
+                           static_cast<unsigned long>(fault.poll_valid_response_count[0]),
+                           static_cast<unsigned long>(fault.poll_valid_response_count[1]),
+                           static_cast<unsigned long>(fault.poll_valid_response_count[2]),
+                           static_cast<unsigned long>(fault.poll_valid_response_count[3]),
+                           static_cast<unsigned long>(fault.poll_valid_response_count[4]),
+                           static_cast<unsigned long>(fault.poll_timeout_count[0]),
+                           static_cast<unsigned long>(fault.poll_timeout_count[1]),
+                           static_cast<unsigned long>(fault.poll_timeout_count[2]),
+                           static_cast<unsigned long>(fault.poll_timeout_count[3]),
+                           static_cast<unsigned long>(fault.poll_timeout_count[4]),
+                           static_cast<unsigned long>(fault.checksum_invalid_count),
+                           static_cast<unsigned long>(fault.malformed_packet_count),
+                           static_cast<unsigned long>(fault.unexpected_response_count),
+                           static_cast<unsigned long>(fault.bus_overlap_count),
+                           static_cast<unsigned>(fault.bus_overlap_pending_id),
+                           static_cast<unsigned long>(fault.bus_overlap_pending_age_ms),
+                           static_cast<unsigned long>(fault.bus_overlap_last_sequence));
                 }
                 motion_lab_get_status(&status, static_cast<uint32_t>(now_us));
                 if (status.active) {

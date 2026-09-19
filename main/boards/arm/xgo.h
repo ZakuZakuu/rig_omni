@@ -91,6 +91,19 @@ typedef struct {
     uint32_t skip_count[MOTOR_NUM];
 } XgoFeedbackPollSnapshot;
 void xgo_feedback_poll_get_snapshot(XgoFeedbackPollSnapshot* out);
+typedef struct {
+    uint32_t request_count[MOTOR_NUM];
+    uint32_t valid_response_count[MOTOR_NUM];
+    uint32_t timeout_count[MOTOR_NUM];
+    uint32_t checksum_invalid_count;
+    uint32_t malformed_packet_count;
+    uint32_t unexpected_response_count;
+    uint32_t bus_overlap_count;
+    uint8_t bus_overlap_pending_id;
+    uint32_t bus_overlap_pending_age_ms;
+    uint32_t bus_overlap_last_sequence;
+} XgoFeedbackDiagnostics;
+void xgo_feedback_poll_get_diagnostics(XgoFeedbackDiagnostics* out);
 // Read-only SCS009 factory/control-table snapshot, printed to UART0.
 void xgo_dump_factory_parameters();
 // Read-only live/error-latch snapshot for servo bring-up diagnostics.
