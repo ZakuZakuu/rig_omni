@@ -1018,3 +1018,41 @@ there are no stream-timing, watchdog, voltage-under-motion, or actuator
 tracking measurements from this attempt. This is a deployment/readiness
 failure at acquisition, not evidence about Creature Motion quality. No retry,
 servo-parameter change, manual q adjustment, or Stage #10 work followed it.
+
+## 2026-09-19 — Host acquisition readiness race diagnosis and no-motion check
+
+The failed host attempt above was traced to a host/firmware freshness-window
+race, not to an actuator motion command. Firmware `creature_stream_take()`
+requires every joint to have a non-stale, nonzero-timestamp feedback sample no
+older than 250 ms and no servo error. The pre-fix host queried one state and
+immediately sent `creature take`; `fb_stale=0` alone did not prove that age
+predicate.
+
+The top-level host fix was committed at
+`5c38137` on `feat/physical-creature-motion-v0`. Without changing firmware
+runtime source, the host now waits up to two seconds for two consecutive
+`owner=released` samples with finite feedback/voltage, zero stale/error flags,
+and all `fb_age_ms <= 250`. It records readiness poll count, wait duration,
+per-joint ages/stale/error values, voltage, owner, and whether the take line
+was actually sent; failure is closed without sending `take`.
+
+First, a read-only serial-open diagnostic was run after a healthy monitor
+state. Its immutable artifacts are under
+`artifacts/physical/20260919T_acquisition_open_diagnostic/` in the top-level
+repository. Opening the current pyserial transport produced no `ESP-ROM`,
+`rst:`, `Build:`, or `boot:` markers. Twelve state samples over about 1.5 s
+remained `owner=released`, with zero stale/error flags and zero servo errors;
+ages ranged up to 289 ms while legacy idle continued to change the released
+posture. Therefore a pyserial DTR/RTS reset is not supported by this check and
+was not changed blindly.
+
+With the human observing, the fixed host then ran exactly one no-motion
+acquisition check. Artifacts are under
+`artifacts/physical/20260919T_acquisition_readiness_check/`. The initial state
+ages were `339/313/293/112/61 ms`, so the gate waited three polls for two
+consecutive healthy samples (`70/49/29/9/111 ms`) in approximately 306 ms.
+`creature take` was accepted into HOLD, `creature state` remained holding, and
+`creature release` returned `owner=released`. No target or Motion Lab command
+was sent; the human observed no jump, sound, cable strain, or other physical
+reaction. This verifies the acquisition race fix only and is not a Creature
+Motion acceptance run.
