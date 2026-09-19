@@ -1160,3 +1160,38 @@ When feedback health first trips `fault_hold`, telemetry emits one
 poll ID, pending/attempt state, skip counters, and the last accepted sequence.
 This is diagnostic only; no physical validation or parameter tuning has been
 performed for this revision yet.
+
+## 2026-09-19 — Feedback-arbitration fix: fixed-target pass, Stage 9B stale stop
+
+Firmware `72109ea` was built and flashed through the documented `rig_env` /
+ESP-IDF workflow. The device ELF SHA was
+`7c28bc1b41f0bffd9bc6719edc8938cef285b0d477191208a1c136b97a6569d6`.
+The firmware-side change is limited to bounded feedback arbitration and
+diagnostics; no servo EEPROM, PID, dead-zone, or startup-force parameter was
+changed.
+
+After `mlab idle off`, the supervised 10-second fixed-target diagnostic
+accepted 84 targets. It reported no stale flags, timeouts, checksum or
+malformed frames, unexpected IDs, or servo errors. Feedback ages remained
+below 165 ms, voltage was 7.9--8.1 V, and the observed diagnostic deltas were
+97--98 requests per ID with 97--98 valid responses per ID. The immutable
+artifact is
+`artifacts/physical/20260919T_feedback-diagnostics-no-motion-r4/`.
+
+The required short Stage 9B scene was then run exactly once under supervision
+using the same 7.5-second plan (rest transition 0--2 s, startle at 2.2 s,
+return at 5.5 s). Acquisition passed with two fresh samples
+`[49,29,9,114,74] ms` and `[66,46,126,106,86] ms`; voltage was 7.9 V at
+acquisition and 7.8--8.1 V during the stream. The device accepted 209 target
+frames and then ACKed the next target with `feedback_fresh=0`. The host
+entered its fail-closed path, stopped into ordinary HOLD, and closed without
+release or retry. No 28-second session, tuning, or second physical motion was
+run. The immutable artifact is
+`artifacts/physical/20260919T_stage9b-feedback-arbitration-r1/`.
+
+This run confirms that the short-window bus arbitration fix removes the
+previous fixed-target corruption/freshness failure, but it does not yet close
+the active-stream freshness problem. The remaining stale event is not
+isolated as bus versus actuator behavior; preserve the capture and do not
+weaken the firmware freshness predicate or infer motion quality from this
+partial run.
