@@ -984,3 +984,37 @@ target in HOLD. UART shows no post-take target discontinuity; a separate human
 visual jump assessment was not captured in the terminal record. `creature
 release` then returned `owner=released` successfully. Monitor exited cleanly
 and the port was released.
+
+## 2026-09-19 — Stage #9 supervised Creature Motion acceptance attempt
+
+The top-level checkout was verified on `feat/physical-creature-motion-v0` at
+the then-current local HEAD `d4951e6ce54d2094137039ae3d3825145fe97038`. The
+firmware submodule remained pinned to
+`ec5b2f816404551ee9936777f663c8da663f6772`; no firmware was rebuilt or
+flashed. ESP-IDF monitor read-only verification reported protocol 1, five
+joints, mdeg units, 40 Hz maximum stream rate, a 250 ms watchdog, and device
+ELF SHA-256
+`71f7b83257e02193dc698851589c9546fde069f1c1d1a6ea39f763044551a342`.
+Before the host attempt, `owner=released`, all stale/error flags were zero,
+five model-space feedback values were present, voltage was 7.20 V, and all
+Motion Lab servo error counts were zero. The supervised no-motion ownership
+check (`creature take` -> state -> `creature release`) completed without a
+visible jump; the final state was `owner=released` at 7.80 V.
+
+Exactly one host execution was then attempted with the documented 28-second
+command and a new immutable run directory:
+`artifacts/physical/20260919T112240_first-creature-motion/`. The PC backend
+opened the port but the first `creature take` was rejected by the device with
+`result=no_feedback`. No target was accepted, no active owner was entered, and
+no expressive motion was sent. The backend closed through its emergency-HOLD
+path; no release command was issued after the rejected acquisition. The human
+reported no movement, sound, cable strain, or other physical reaction.
+
+The retained manifest records `shutdown_reason=emergency_hold`,
+`exception=Creature Stream take failed: no_feedback`, zero accepted targets,
+and firmware/top-level identities above. The planned command trace contains
+934 rows but every `sent` value is `0`; no feedback trace was produced, so
+there are no stream-timing, watchdog, voltage-under-motion, or actuator
+tracking measurements from this attempt. This is a deployment/readiness
+failure at acquisition, not evidence about Creature Motion quality. No retry,
+servo-parameter change, manual q adjustment, or Stage #10 work followed it.
