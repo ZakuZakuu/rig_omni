@@ -1082,3 +1082,25 @@ held its posture during HOLD. `creature release` returned `accepted` with
 The immutable host artifact is
 `artifacts/physical/20260919T_ownership-hold-observation-r3/`. This is a
 successful ownership proof only; no Creature Motion session was run.
+
+## 2026-09-19 — Stage 9A active-stream proof blocked by current pose
+
+Under human supervision, the read-only preflight passed: protocol 1, five
+joints, device ELF SHA
+`71f7b83257e02193dc698851589c9546fde069f1c1d1a6ea39f763044551a342`, zero
+stale/error flags, and 8.0 V. `creature take` was accepted into HOLD.
+
+The Stage 9A no-op stream then failed closed before its first target. The
+measured HOLD posture was approximately
+`[10.840, -48.047, 103.418, 0.000, 81.152]` degrees; J4 exceeded the shared
+model/firmware upper limit of approximately `74.485` degrees, so the host
+`SerialHardwareBackend` rejected the target with `target exceeds simulation
+joint limits`. Accepted target count was zero and no physical target motion
+was commanded. A read-only state query while still in HOLD confirmed the
+firmware target J4 was also approximately `81.152` degrees. The session was
+left fail-closed in HOLD; no automatic release or retry was performed.
+
+This is a current-pose/safety-envelope mismatch caused by the legacy runtime,
+not evidence that the active stream transport is broken. Stage 9B was not
+started. Do not loosen limits or clamp this target without a deliberate safety
+decision.
