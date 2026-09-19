@@ -42,6 +42,23 @@ struct CreatureStreamSnapshot {
     float voltage_v;
 };
 
+// One-shot diagnostic captured when Creature Stream first enters fault_hold.
+// This is intentionally separate from the periodic state response so a host
+// can identify which feedback poll was in flight without adding high-rate
+// logging to the control path.
+struct CreatureStreamFaultSnapshot {
+    uint32_t timestamp_ms;
+    uint32_t last_sequence;
+    int16_t feedback_pos[CREATURE_STREAM_JOINTS];
+    uint32_t feedback_age_ms[CREATURE_STREAM_JOINTS];
+    bool feedback_stale[CREATURE_STREAM_JOINTS];
+    uint8_t servo_error[CREATURE_STREAM_JOINTS];
+    uint8_t poll_id;
+    bool poll_pending;
+    uint8_t poll_attempts;
+    uint32_t poll_skip_count[CREATURE_STREAM_JOINTS];
+};
+
 void creature_stream_init();
 CreatureStreamResult creature_stream_take(uint64_t now_us);
 CreatureStreamResult creature_stream_accept_target(uint32_t sequence,
@@ -56,6 +73,7 @@ void creature_stream_update(uint64_t now_us);
 bool creature_stream_should_send(uint64_t now_us);
 void creature_stream_get_target_pos(int16_t out_pos[CREATURE_STREAM_JOINTS]);
 void creature_stream_get_snapshot(CreatureStreamSnapshot* out, uint64_t now_us);
+bool creature_stream_take_fault_snapshot(CreatureStreamFaultSnapshot* out);
 bool creature_stream_feedback_is_healthy(uint64_t now_us);
 const char* creature_stream_result_string(CreatureStreamResult result);
 

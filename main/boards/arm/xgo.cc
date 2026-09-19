@@ -20,6 +20,7 @@
 #include "application.h"
 #include "board.h"
 #include "display.h"
+#include "feedback_poll_scheduler.h"
 
 static const char* TAG = "XGO";
 
@@ -421,13 +422,12 @@ static volatile uint32_t feedback_voltage_next_ms = 0;
 
 namespace {
 
-constexpr uint32_t kFeedbackRequestTimeoutMs = 60;
-constexpr uint8_t kFeedbackMaxAttempts = 3;
+constexpr uint32_t kFeedbackRequestTimeoutMs = rig_arm_feedback::kRequestTimeoutMs;
 constexpr uint32_t kFeedbackHighRateTaskIntervalMs = 5;
 constexpr uint32_t kFeedbackBackgroundPeriodMs = 100;
 
 uint8_t next_feedback_id(uint8_t current) {
-    return current >= MOTOR_NUM ? 1 : static_cast<uint8_t>(current + 1);
+    return rig_arm_feedback::next_id(current);
 }
 
 void reset_feedback_request() {
@@ -758,9 +758,9 @@ void xgo_feedback_poll() {
             return;
         }
         feedback_poll_waiting = false;
-        if (feedback_poll_attempts < kFeedbackMaxAttempts) {
+        if (rig_arm_feedback::retry_allowed(feedback_poll_attempts)) {
             // Fall through and retry the same request below.
-        } else {
+        } else if (rig_arm_feedback::should_mark_stale(feedback_poll_attempts)) {
             mark_feedback_skip(feedback_poll_id);
             if (is_high_rate_id(feedback_poll_id)) {
                 feedback_high_rate_next_ms = now_ms + feedback_high_rate_period_ms;
@@ -815,7 +815,9 @@ void xgo_feedback_poll() {
 }
 
 uint32_t xgo_feedback_poll_interval_ms() {
-    return feedback_high_rate_enabled ? kFeedbackHighRateTaskIntervalMs : 20;
+    return feedback_high_rate_enabled
+        ? kFeedbackHighRateTaskIntervalMs
+        : rig_arm_feedback::kTaskIntervalMs;
 }
 
 void xgo_feedback_poll_config(uint8_t joint_index, uint32_t period_ms) {
@@ -865,6 +867,16 @@ void xgo_feedback_poll_print_stats() {
            static_cast<unsigned long>(feedback_poll_skip_count[2]),
            static_cast<unsigned long>(feedback_poll_skip_count[3]),
            static_cast<unsigned long>(feedback_poll_skip_count[4]));
+}
+
+void xgo_feedback_poll_get_snapshot(XgoFeedbackPollSnapshot* out) {
+    if (out == nullptr) return;
+    out->poll_id = feedback_poll_id;
+    out->request_pending = feedback_poll_waiting;
+    out->attempts = feedback_poll_attempts;
+    for (int i = 0; i < MOTOR_NUM; ++i) {
+        out->skip_count[i] = feedback_poll_skip_count[i];
+    }
 }
 
 void detect_triple_click() {

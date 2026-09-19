@@ -84,6 +84,13 @@ uint32_t xgo_feedback_poll_interval_ms();
 void xgo_feedback_poll_config(uint8_t joint_index, uint32_t period_ms);
 void xgo_feedback_poll_disable();
 void xgo_feedback_poll_print_stats();
+typedef struct {
+    uint8_t poll_id;
+    bool request_pending;
+    uint8_t attempts;
+    uint32_t skip_count[MOTOR_NUM];
+} XgoFeedbackPollSnapshot;
+void xgo_feedback_poll_get_snapshot(XgoFeedbackPollSnapshot* out);
 // Read-only SCS009 factory/control-table snapshot, printed to UART0.
 void xgo_dump_factory_parameters();
 // Read-only live/error-latch snapshot for servo bring-up diagnostics.

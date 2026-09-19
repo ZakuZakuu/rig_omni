@@ -1179,6 +1179,31 @@ public:
                 MotionLabStatus status = {};
                 const uint64_t now_us = static_cast<uint64_t>(esp_timer_get_time());
                 const uint32_t now_ms = static_cast<uint32_t>(now_us / 1000ULL);
+                CreatureStreamFaultSnapshot fault = {};
+                if (creature_stream_take_fault_snapshot(&fault)) {
+                    printf("CREATURE_FAULT,reason=feedback_unhealthy,ts_ms=%lu,last_seq=%lu,poll_id=%u,poll_pending=%d,poll_attempts=%u,fb_pos=%d|%d|%d|%d|%d,fb_age_ms=%lu|%lu|%lu|%lu|%lu,fb_stale=%d|%d|%d|%d|%d,servo_error=%d|%d|%d|%d|%d,poll_skips=%lu|%lu|%lu|%lu|%lu\r\n",
+                           static_cast<unsigned long>(fault.timestamp_ms),
+                           static_cast<unsigned long>(fault.last_sequence),
+                           static_cast<unsigned>(fault.poll_id), fault.poll_pending ? 1 : 0,
+                           static_cast<unsigned>(fault.poll_attempts),
+                           fault.feedback_pos[0], fault.feedback_pos[1], fault.feedback_pos[2],
+                           fault.feedback_pos[3], fault.feedback_pos[4],
+                           static_cast<unsigned long>(fault.feedback_age_ms[0]),
+                           static_cast<unsigned long>(fault.feedback_age_ms[1]),
+                           static_cast<unsigned long>(fault.feedback_age_ms[2]),
+                           static_cast<unsigned long>(fault.feedback_age_ms[3]),
+                           static_cast<unsigned long>(fault.feedback_age_ms[4]),
+                           fault.feedback_stale[0] ? 1 : 0, fault.feedback_stale[1] ? 1 : 0,
+                           fault.feedback_stale[2] ? 1 : 0, fault.feedback_stale[3] ? 1 : 0,
+                           fault.feedback_stale[4] ? 1 : 0,
+                           fault.servo_error[0], fault.servo_error[1], fault.servo_error[2],
+                           fault.servo_error[3], fault.servo_error[4],
+                           static_cast<unsigned long>(fault.poll_skip_count[0]),
+                           static_cast<unsigned long>(fault.poll_skip_count[1]),
+                           static_cast<unsigned long>(fault.poll_skip_count[2]),
+                           static_cast<unsigned long>(fault.poll_skip_count[3]),
+                           static_cast<unsigned long>(fault.poll_skip_count[4]));
+                }
                 motion_lab_get_status(&status, static_cast<uint32_t>(now_us));
                 if (status.active) {
                     short command_pos[MOTOR_NUM];

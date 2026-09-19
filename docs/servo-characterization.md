@@ -43,7 +43,8 @@ One ID is requested every 20 ms, so the nominal complete five-ID cycle is 100 ms
 - `fb_pos[5]`, `fb_speed_raw[5]`, `fb_load_raw[5]`: unchanged raw feedback
   fields. Load is an effort proxy, not a calibrated force.
 - `fb_stale[5]`: explicit stale marker. A joint is marked stale only after
-  three unanswered request attempts; a valid status packet clears the marker.
+  two unanswered request attempts (the initial request plus one retry); a
+  valid status packet clears the marker.
 - `servo_voltage_v`: the most recent read-only SCS009 present-voltage sample from
   ID 1, in volts. It is refreshed at most once per second so it cannot starve a
   pending position/status response. This is a bus-voltage diagnostic, not a
@@ -62,10 +63,18 @@ allowing a mirrored physical-direction test without changing any servo register.
 The safety check applies the signed target to the current feedback position and
 rejects either direction outside the conservative count range.
 
-The normal poller uses a 60 ms response timeout and three total attempts per
-request. After the third timeout it records a skip, marks that joint stale, and
-continues with the next ID. This bounds the damage from an unplugged or
-unresponsive servo instead of blocking the entire round-robin.
+The normal poller uses a 60 ms response timeout and two total attempts per
+request. After the second timeout it records a skip, marks that joint stale,
+and continues with the next ID. The worst-case blocked interval is therefore
+about 140 ms (two 60 ms waits plus one 20 ms scheduler wake-up), below the
+250 ms Creature Stream freshness window. This bounds the damage from an
+unplugged or unresponsive servo instead of blocking the entire round-robin.
+
+When Creature Stream first enters `fault_hold` because feedback is unhealthy,
+the firmware emits one `CREATURE_FAULT` snapshot from the telemetry task. It
+contains per-joint position, age, stale/error flags, the current poll ID,
+whether a request is pending, the retry count, and per-ID skip counters. This
+is a one-shot diagnostic and does not change the fail-safe threshold.
 
 For stick-slip characterization, enable selected-joint high-rate mode from the
 monitor (joint numbers are zero-based):

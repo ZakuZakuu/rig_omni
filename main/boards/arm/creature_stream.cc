@@ -37,6 +37,8 @@ struct CreatureStreamState {
 };
 
 CreatureStreamState state = {};
+CreatureStreamFaultSnapshot fault_snapshot = {};
+bool fault_snapshot_pending = false;
 portMUX_TYPE state_mux = portMUX_INITIALIZER_UNLOCKED;
 
 uint64_t feedback_age_us(int index, uint64_t now_us) {
@@ -103,11 +105,35 @@ void set_target_from_feedback(CreatureStreamState* current, uint64_t now_us, boo
     current->force_send = force_send;
 }
 
+void capture_fault_snapshot(uint64_t now_us) {
+    fault_snapshot.timestamp_ms = static_cast<uint32_t>(now_us / 1000ULL);
+    fault_snapshot.last_sequence = state.last_sequence;
+    for (int i = 0; i < MOTOR_NUM; ++i) {
+        fault_snapshot.feedback_pos[i] = motor[i].FbPos;
+        const uint64_t age_us = feedback_age_us(i, now_us);
+        fault_snapshot.feedback_age_ms[i] = age_us == UINT64_MAX
+            ? UINT32_MAX : static_cast<uint32_t>(age_us / 1000ULL);
+        fault_snapshot.feedback_stale[i] = motor[i].FbStale;
+        fault_snapshot.servo_error[i] = motor[i].FbError;
+    }
+    XgoFeedbackPollSnapshot poll = {};
+    xgo_feedback_poll_get_snapshot(&poll);
+    fault_snapshot.poll_id = poll.poll_id;
+    fault_snapshot.poll_pending = poll.request_pending;
+    fault_snapshot.poll_attempts = poll.attempts;
+    for (int i = 0; i < MOTOR_NUM; ++i) {
+        fault_snapshot.poll_skip_count[i] = poll.skip_count[i];
+    }
+    fault_snapshot_pending = true;
+}
+
 }  // namespace
 
 void creature_stream_init() {
     portENTER_CRITICAL(&state_mux);
     memset(&state, 0, sizeof(state));
+    memset(&fault_snapshot, 0, sizeof(fault_snapshot));
+    fault_snapshot_pending = false;
     state.previous_motor_speed = kStreamServoSpeed;
     portEXIT_CRITICAL(&state_mux);
 }
@@ -241,6 +267,9 @@ void creature_stream_update(uint64_t now_us) {
     portENTER_CRITICAL(&state_mux);
     if (state.owned && !state.holding && !state.timed_out && !state.fault_hold && state.sequence_valid) {
         if (!all_feedback_healthy(now_us)) {
+            if (!state.fault_hold) {
+                capture_fault_snapshot(now_us);
+            }
             state.fault_hold = true;
             state.holding = true;
             set_target_from_feedback(&state, now_us, true);
@@ -302,6 +331,19 @@ void creature_stream_get_snapshot(CreatureStreamSnapshot* out, uint64_t now_us) 
     }
     out->voltage_v = servo_voltage;
     portEXIT_CRITICAL(&state_mux);
+}
+
+bool creature_stream_take_fault_snapshot(CreatureStreamFaultSnapshot* out) {
+    if (out == nullptr) return false;
+    portENTER_CRITICAL(&state_mux);
+    if (!fault_snapshot_pending) {
+        portEXIT_CRITICAL(&state_mux);
+        return false;
+    }
+    memcpy(out, &fault_snapshot, sizeof(*out));
+    fault_snapshot_pending = false;
+    portEXIT_CRITICAL(&state_mux);
+    return true;
 }
 
 const char* creature_stream_result_string(CreatureStreamResult result) {

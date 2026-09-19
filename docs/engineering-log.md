@@ -1104,3 +1104,24 @@ This is a current-pose/safety-envelope mismatch caused by the legacy runtime,
 not evidence that the active stream transport is broken. Stage 9B was not
 started. Do not loosen limits or clamp this target without a deliberate safety
 decision.
+
+## 2026-09-19 — Feedback-poll fairness hardening (pre-hardware)
+
+The two failed Stage 9B repeats showed that the existing five-ID response-gated
+poller could enter a Creature Stream feedback fault during an otherwise healthy
+motion stream. Review confirmed that one unanswered ID could consume three
+60 ms request attempts before the round-robin advanced. This was compatible
+with fail-safe stale marking, but gave the remaining IDs too little freshness
+margin during host streaming.
+
+The scheduler now uses two total attempts (initial request plus one retry), so
+one missing ID is bounded to about 140 ms including the 20 ms scheduler wake-up.
+The 250 ms firmware freshness predicate and all target/watchdog safety checks
+are unchanged. A focused scheduler contract test covers bounded retries,
+stale-on-final-timeout, round-robin progress, and the freshness bound.
+
+When feedback health first trips `fault_hold`, telemetry emits one
+`CREATURE_FAULT` snapshot containing per-joint age/stale/error state, current
+poll ID, pending/attempt state, skip counters, and the last accepted sequence.
+This is diagnostic only; no physical validation or parameter tuning has been
+performed for this revision yet.
