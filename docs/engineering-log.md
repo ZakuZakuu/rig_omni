@@ -1105,6 +1105,41 @@ not evidence that the active stream transport is broken. Stage 9B was not
 started. Do not loosen limits or clamp this target without a deliberate safety
 decision.
 
+## 2026-09-19 — Feedback-fairness fix: no-motion validation still fail-closed
+
+The bounded-retry firmware (`9de5575`, ELF SHA
+`2ba905b452966b59e17ffc7027a659ff4599dbe64a1d7727a28ca5f91a6c213f`) was
+flashed and verified through ESP-IDF monitor. Read-only capabilities reported
+protocol 2, experiments `0|1|2|3|4|5`, reversal support, and the expected ELF;
+`mlab status` showed all five IDs with zero current errors/stale flags. Legacy
+idle was then disabled before the supervised stream.
+
+The required 10-second no-motion active-stream check held the acquired posture
+constant at `[0, -47.754, 103.418, 0, 74.414]` degrees. Acquisition passed two
+consecutive host samples (`[81,60,41,20,100]` and `[95,58,54,14,98]` ms),
+voltage stayed at 7.8--7.9 V, and 103 fixed targets were accepted. The next
+target was rejected because the firmware had entered `fault_hold`. The one-shot
+snapshot was:
+
+```text
+poll_id=3,poll_pending=1,poll_attempts=1,
+fb_age_ms=160|225|220|190|163,
+fb_stale=0|1|0|0|0,servo_error=0|0|0|0|0,
+poll_skips=30|26|24|32|36,last_seq=103
+```
+
+The state samples before the transition had maximum reported ages
+`163|137|194|165|159` ms and no stale/error rows; the integer age fields are
+truncated, so the stale flag is the decisive signal. Cleanup stopped into
+HOLD; no release or automatic retry followed. No Stage 9B motion was run.
+
+This confirms the new retry bound does not by itself eliminate the runtime
+feedback fault: one ID (ID 2) still reached the genuine stale/fail-safe path
+under the active target stream. The 250 ms freshness threshold remains
+unchanged. The next investigation must distinguish intermittent UART/bus
+contention from an actuator response problem; do not weaken freshness or infer
+motion quality from this no-motion failure.
+
 ## 2026-09-19 — Feedback-poll fairness hardening (pre-hardware)
 
 The two failed Stage 9B repeats showed that the existing five-ID response-gated
