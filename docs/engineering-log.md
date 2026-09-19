@@ -1223,3 +1223,34 @@ failure is a transient freshness condition under motion, not a reproducible
 fixed-target corruption pattern. The next safe action is targeted inspection
 of the J0/base cable path while unpowered; do not weaken freshness or run the
 final Stage 9B session until that evidence is available.
+
+## 2026-09-19 — Feedback-response guard and final short Stage 9B validation
+
+The motion-dependent failures were compared against the clean J0-only retry.
+The failed multi-joint stream had accumulated 99 additional `bus_overlap`
+events, 2 additional checksum-invalid frames, and 1603 additional deferred
+commands relative to that clean run; `bus_overlap_last_seq=126` matched the
+failed target sequence. This pointed to a remaining half-duplex arbitration
+window rather than a stale actuator state.
+
+Firmware commit `418e13b` changed only the command/feedback arbitration guard:
+while any feedback request is awaiting its bounded response/retry window, a
+position command is deferred and retried after the pending transaction clears.
+The firmware was rebuilt and flashed through `rig_env`/ESP-IDF. The device
+reported protocol 2, experiments `0|1|2|3|4|5`, `reversal=1`, all five servos
+online with zero stale/error flags, and ELF SHA
+`0156d1a230eb33431a9e97020a32aa4a4caf2667f6c4523bbfb26f7d522e5934`.
+Stock idle was disabled for observation; no servo EEPROM/PID/dead-zone/startup
+parameters were changed.
+
+One supervised 7.5-second Stage 9B short scene was then run using the existing
+planner (rest transition 0--2 s, startle at 2.2 s, return at 5.5 s). Acquisition
+passed with two fresh samples: `[66,46,27,152,107] ms` and
+`[66,26,6,106,86] ms`; voltage was 8.1 V. All 251 planned targets were
+accepted, none were rejected, and the session completed normal stop/release
+with no stale feedback, watchdog/fault, or servo errors. The immutable artifact
+is `artifacts/physical/20260919T_stage9b-final-arbitration-fix-r1/`.
+
+This closes the short Stage 9B execution/safety gate for the current firmware
+revision. The prior failed captures remain preserved as negative evidence; the
+fix does not claim to remove the separately observed mechanical play/jerkiness.
